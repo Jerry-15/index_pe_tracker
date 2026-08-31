@@ -1,0 +1,7 @@
+# Netlify 配置：静态图表版
+# 发布目录为 static/（ECharts 前端 + 数据 JSON）
+[build]
+  publish = "static"
+
+[build.environment]
+  PYTHON_VERSION = "3.11"

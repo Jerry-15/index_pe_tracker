@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>板块指数估值追踪器</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #f5f6fa; color: #333; }
+  .header { background: #1f2d3d; color: #fff; padding: 18px 24px; }
+  .header h1 { font-size: 22px; font-weight: 600; }
+  .header p { font-size: 12px; color: #a3b1c2; margin-top: 4px; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  .controls { background: #fff; border-radius: 10px; padding: 14px 18px; margin-bottom: 14px;
+              box-shadow: 0 1px 3px rgba(0,0,0,.08); display: flex; align-items: center;
+              flex-wrap: wrap; gap: 12px; }
+  .controls label { font-size: 13px; color: #666; }
+  select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;
+           background: #fff; min-width: 200px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .card { background: #fff; border-radius: 10px; padding: 14px; text-align: center;
+          box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .card .label { font-size: 12px; color: #888; }
+  .card .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+  .card .sub { font-size: 12px; color: #999; margin-top: 2px; }
+  .up { color: #d62728; } .down { color: #2ca02c; }
+  .chart-box { background: #fff; border-radius: 10px; padding: 14px; margin-bottom: 14px;
+               box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .chart-box h3 { font-size: 14px; color: #444; margin-bottom: 8px; }
+  .chart { width: 100%; height: 420px; }
+  .chart-sm { width: 100%; height: 260px; }
+  .footer { text-align: center; color: #aaa; font-size: 12px; padding: 20px; }
+  .loading { text-align: center; color: #999; padding: 40px; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>📊 板块指数估值追踪器</h1>
+  <p>自下而上计算 PE(TTM) · 数据来源：新浪财经 / 申万指数 · 仅供研究参考，不构成投资建议</p>
+</div>
+
+<div class="container">
+  <div class="controls">
+    <label for="picker">选择板块/行业：</label>
+    <select id="picker"><option>加载中...</option></select>
+    <span id="coverage" style="font-size:12px;color:#888;"></span>
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="chart-box">
+    <h3>指数 PE(TTM) 走势（灰色带 = 均值±1σ 正常区间）</h3>
+    <div id="chartMain" class="chart"></div>
+  </div>
+
+  <div class="chart-box">
+    <h3>PE 历史百分位（红虚=80%高估线，绿虚=20%低估线）</h3>
+    <div id="chartPct" class="chart-sm"></div>
+  </div>
+
+  <div class="chart-box">
+    <h3>成分股总市值 / 总利润TTM</h3>
+    <div id="chartFund" class="chart-sm"></div>
+  </div>
+</div>
+
+<div class="footer">
+  板块指数估值追踪器 · MIT License · 数据来自公开接口，可能存在延迟或误差
+</div>
+
+<script>
+const COLORS = { pe:'#1f77b4', mean:'#ff7f0e', high:'#d62728', low:'#2ca02c', ref:'#7f7f7f' };
+let indexList = [];
+let currentCode = null;
+let charts = {};
+
+function initCharts() {
+  charts.main = echarts.init(document.getElementById('chartMain'));
+  charts.pct  = echarts.init(document.getElementById('chartPct'));
+  charts.fund = echarts.init(document.getElementById('chartFund'));
+  window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
+}
+
+function fmtDate(d) { return d.slice(0,10); }
+
+async function loadIndexList() {
+  const res = await fetch('data/index_list.json');
+  indexList = await res.json();
+  const sel = document.getElementById('picker');
+  sel.innerHTML = '';
+  const gIndex = document.createElement('optgroup'); gIndex.label = '宽基指数';
+  const gIndus = document.createElement('optgroup'); gIndus.label = '申万行业';
+  indexList.forEach(item => {
+    const opt = document.createElement('option');
+    opt.value = item.code; opt.textContent = item.name;
+    (item.type === 'index' ? gIndex : gIndus).appendChild(opt);
+  });
+  sel.appendChild(gIndex); sel.appendChild(gIndus);
+  sel.value = '000300';
+  sel.onchange = () => render(sel.value);
+  render(sel.value);
+}
+
+function num(v, n=2) { return v == null ? '--' : v.toFixed(n); }
+
+function renderCards(meta, rows) {
+  const last = rows[rows.length-1];
+  const [d, pe, mean, high, low, pct] = last;
+  const cards = document.getElementById('cards');
+  const trend = (pct != null && mean != null) ? (pe > mean ? 'up' : 'down') : '';
+  const zone = pct != null ? (pct>80?'偏贵':pct>60?'略高':pct>40?'合理':pct>20?'偏低':'低估') : '--';
+  cards.innerHTML = `
+    <div class="card"><div class="label">当前 PE(TTM)</div>
+      <div class="value ${trend}">${num(pe)}</div><div class="sub">${fmtDate(d)}</div></div>
+    <div class="card"><div class="label">滚动均值</div><div class="value">${num(mean)}</div></div>
+    <div class="card"><div class="label">高估线(μ+1σ)</div><div class="value up">${num(high)}</div></div>
+    <div class="card"><div class="label">低估线(μ-1σ)</div><div class="value down">${num(low)}</div></div>
+    <div class="card"><div class="label">历史百分位</div><div class="value">${pct==null?'--':pct.toFixed(0)+'%'}</div>
+      <div class="sub">${zone}</div></div>
+    <div class="card"><div class="label">官方参考PE</div><div class="value">${meta.pe_ref!=null?meta.pe_ref.toFixed(2):'--'}</div></div>
+  `;
+}
+
+function buildMainOption(meta, rows) {
+  const dates = rows.map(r => fmtDate(r[0]));
+  const pe = rows.map(r => r[1]);
+  const mean = rows.map(r => r[2]);
+  const high = rows.map(r => r[3]);
+  const low = rows.map(r => r[4]);
+  const series = [
+    { name:'正常区间', type:'line', data:high, stack:'band', symbol:'none', lineStyle:{opacity:0}, tooltip:{show:false}, emphasis:{disabled:true} },
+    { name:'均值±1σ', type:'line', data:low, stack:'band', symbol:'none', lineStyle:{opacity:0},
+      areaStyle:{color:'rgba(128,128,128,0.14)'}, tooltip:{show:false}, emphasis:{disabled:true} },
+    { name:'指数PE(TTM)', type:'line', data:pe, showSymbol:false, lineStyle:{width:2, color:COLORS.pe}, itemStyle:{color:COLORS.pe} },
+  ];
+  if (mean.some(v=>v!=null)) series.push({ name:'滚动均值', type:'line', data:mean, showSymbol:false, lineStyle:{width:1.2, type:'dashed', color:COLORS.mean} });
+  if (high.some(v=>v!=null)) series.push({ name:'高估线(μ+1σ)', type:'line', data:high, showSymbol:false, lineStyle:{width:1, type:'dotted', color:COLORS.high} });
+  if (low.some(v=>v!=null)) series.push({ name:'低估线(μ-1σ)', type:'line', data:low, showSymbol:false, lineStyle:{width:1, type:'dotted', color:COLORS.low} });
+
+  const markLines = [];
+  if (meta.pe_ref != null) {
+    markLines.push({ yAxis: meta.pe_ref, lineStyle:{color:COLORS.ref, type:'dashed', width:1.2},
+      label:{formatter:'官方参考 ' + meta.pe_ref.toFixed(1)} });
+  }
+  if (markLines.length && series[2]) {
+    series[2].markLine = { symbol:'none', data: markLines };
+  }
+
+  return {
+    tooltip:{ trigger:'axis' },
+    legend:{ data:['指数PE(TTM)','滚动均值','高估线(μ+1σ)','低估线(μ-1σ)'], top:0, textStyle:{fontSize:11} },
+    grid:{ left:50, right:20, top:34, bottom:60 },
+    xAxis:{ type:'category', data:dates, boundaryGap:false },
+    yAxis:{ type:'value', name:'PE', scale:true },
+    dataZoom:[ {type:'inside'}, {type:'slider', height:18, bottom:8, start:60, end:100} ],
+    series,
+  };
+}
+
+function buildPctOption(rows) {
+  const dates = rows.map(r => fmtDate(r[0]));
+  const pct = rows.map(r => r[5]);
+  return {
+    tooltip:{ trigger:'axis' },
+    grid:{ left:50, right:20, top:20, bottom:40 },
+    xAxis:{ type:'category', data:dates, boundaryGap:false },
+    yAxis:{ type:'value', min:0, max:100, name:'%' },
+    dataZoom:[ {type:'inside'}, {type:'slider', height:14, bottom:4, start:60, end:100} ],
+    series:[{
+      type:'line', data:pct, showSymbol:false, lineStyle:{width:1.6, color:COLORS.pe},
+      areaStyle:{color:'rgba(31,119,180,0.15)'},
+      markLine:{ symbol:'none', data:[
+        { yAxis:80, lineStyle:{color:'#d62728',type:'dashed'}, label:{formatter:'高估 80%',fontSize:10} },
+        { yAxis:50, lineStyle:{color:'#bbb',type:'dashed'}, label:{formatter:'中位 50%',fontSize:10} },
+        { yAxis:20, lineStyle:{color:'#2ca02c',type:'dashed'}, label:{formatter:'低估 20%',fontSize:10} },
+      ]},
+    }],
+  };
+}
+
+function buildFundOption(rows) {
+  const dates = rows.map(r => fmtDate(r[0]));
+  const mv = rows.map(r => r[6]==null?null:+(r[6]/1e8).toFixed(1));
+  const profit = rows.map(r => r[7]==null?null:+(r[7]/1e8).toFixed(1));
+  return {
+    tooltip:{ trigger:'axis' },
+    legend:{ data:['总市值(亿)','总利润TTM(亿)'], top:0, textStyle:{fontSize:11} },
+    grid:{ left:60, right:60, top:30, bottom:50 },
+    xAxis:{ type:'category', data:dates, boundaryGap:false },
+    yAxis:[ { type:'value', name:'市值(亿)', scale:true },
+            { type:'value', name:'利润(亿)', scale:true, splitLine:{show:false} } ],
+    dataZoom:[ {type:'inside'}, {type:'slider', height:14, bottom:4, start:60, end:100} ],
+    series:[
+      { name:'总市值(亿)', type:'line', data:mv, yAxisIndex:0, showSymbol:false, lineStyle:{width:1.4, color:COLORS.pe} },
+      { name:'总利润TTM(亿)', type:'line', data:profit, yAxisIndex:1, showSymbol:false, lineStyle:{width:1.4, color:COLORS.mean} },
+    ],
+  };
+}
+
+async function render(code) {
+  currentCode = code;
+  const meta = indexList.find(i => i.code === code);
+  document.getElementById('coverage').textContent = meta ? (meta.type==='index'?'宽基指数':'申万行业') : '';
+  const res = await fetch(`data/${code}.json`);
+  const rows = await res.json();
+  if (!rows.length) return;
+  renderCards(meta, rows);
+  charts.main.setOption(buildMainOption(meta, rows), true);
+  charts.pct.setOption(buildPctOption(rows), true);
+  charts.fund.setOption(buildFundOption(rows), true);
+}
+
+initCharts();
+loadIndexList();
+</script>
+</body>
+</html>

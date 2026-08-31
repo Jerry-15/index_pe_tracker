@@ -1,5 +1,5 @@
-# 数据缓存（体积大，不入库）
-data/
+# 数据缓存（体积大，不入库；static/data 的 JSON 需入库供 Netlify 使用）
+/data/
 *.db
 *.db-shm
 *.db-wal

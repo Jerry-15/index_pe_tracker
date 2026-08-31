@@ -17,7 +17,39 @@
 
 ## 在线体验
 
-部署到 Streamlit Community Cloud 后访问：`https://<your-app>.streamlit.app`
+- **Streamlit 交互版**：部署到 Streamlit Community Cloud 或 Hugging Face Spaces
+- **静态图表版（Netlify）**：`static/` 目录为纯静态 ECharts 页面，见下文
+
+## 静态图表版（Netlify 托管）
+
+`static/` 目录是独立的静态应用（无需 Python 运行时），适合 Netlify 托管：
+
+```
+static/
+├── index.html           # ECharts 前端页面
+└── data/                # 导出的 JSON 数据
+    ├── index_list.json
+    └── 000300.json ...  # 各指数/行业数据
+```
+
+### 部署到 Netlify
+
+1. 连接 GitHub 仓库 `Jerry-15/index_pe_tracker` 到 Netlify
+2. 构建配置已写在 `netlify.toml`（发布目录 `static`）
+3. 部署后访问 `https://<你的子域名>.netlify.app`
+
+### 更新数据（静态版）
+
+静态版数据由本地生成。在有数据库的机器上运行：
+
+```bash
+python scripts/export_static_data.py
+git add static/data
+git commit -m "update static data"
+git push
+```
+
+Netlify 检测到 push 后自动重新部署，数据即更新。
 
 ## 快速开始
 
