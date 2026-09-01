@@ -40,16 +40,22 @@ static/
 
 ### 更新数据（静态版）
 
-静态版数据由本地生成。在有数据库的机器上运行：
+**一键更新**（更新行情→重算PE→导出→推送GitHub→Netlify自动部署）：
 
 ```bash
-python scripts/export_static_data.py
-git add static/data
-git commit -m "update static data"
-git push
+python scripts/update_all.py
 ```
 
-Netlify 检测到 push 后自动重新部署，数据即更新。
+- 完整更新较慢（全量下载行情，约1-3小时），适合定期运行
+- 只刷新数据（不下载）：`python scripts/update_all.py --export-only`（约1分钟）
+- 不推送：`python scripts/update_all.py --no-push`
+
+数据更新流程：
+1. 增量合并最新行情
+2. 拉取新财报并重建季度利润
+3. 重算全部板块 PE
+4. 导出 JSON 到 `static/data/`
+5. git push → Netlify 自动重新部署
 
 ## 快速开始
 
