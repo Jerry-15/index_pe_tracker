@@ -128,6 +128,24 @@ class CacheDB:
             sql += " ORDER BY date"
             return pd.read_sql_query(sql, conn, params=params)
 
+    def upsert_quotes(self, code: str, df: pd.DataFrame):
+        """增量合并日K线（只插入新日期，不删除已有）"""
+        if df.empty:
+            return
+        with self._conn() as conn:
+            records = []
+            for _, row in df.iterrows():
+                records.append((
+                    code, row["date"], row.get("open"), row.get("high"),
+                    row.get("low"), row.get("close"), row.get("volume"),
+                    row.get("amount"), row.get("outstanding_share"),
+                    row.get("turnover"), time.time()
+                ))
+            conn.executemany(
+                "INSERT OR IGNORE INTO stock_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                records
+            )
+
     def save_financials(self, code: str, df: pd.DataFrame):
         """保存财务数据（含期间类型）"""
         if df.empty:
