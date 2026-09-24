@@ -93,7 +93,77 @@ class CacheDB:
                     error_msg TEXT,
                     created_at REAL
                 );
+
+                CREATE TABLE IF NOT EXISTS update_checkpoint (
+                    run_id TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    item_key TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    error_msg TEXT,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (run_id, stage, item_key)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_quotes_code_date
+                    ON stock_quotes(code, date);
+                CREATE INDEX IF NOT EXISTS idx_financials_code_publish
+                    ON stock_financials(code, publish_date);
+                CREATE INDEX IF NOT EXISTS idx_quarterly_code_publish
+                    ON stock_quarterly_profit(code, publish_date);
+                CREATE INDEX IF NOT EXISTS idx_pe_daily_index_date
+                    ON index_pe_daily(index_code, trade_date);
+                CREATE INDEX IF NOT EXISTS idx_pe_stats_index_date
+                    ON index_pe_stats(index_code, trade_date);
             """)
+
+    def save_checkpoint(
+        self,
+        run_id: str,
+        stage: str,
+        item_key: str,
+        status: str,
+        error_msg: Optional[str] = None,
+    ):
+        """Persist the latest result for one item in an update run."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO update_checkpoint
+                    (run_id, stage, item_key, status, error_msg, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, stage, item_key) DO UPDATE SET
+                    status=excluded.status,
+                    error_msg=excluded.error_msg,
+                    updated_at=excluded.updated_at
+                """,
+                (run_id, stage, item_key, status, error_msg, time.time()),
+            )
+
+    def load_checkpoint(self, run_id: str, stage: str) -> dict:
+        """Load checkpoint records keyed by item key for a run stage."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT item_key, status, error_msg, updated_at
+                FROM update_checkpoint
+                WHERE run_id=? AND stage=?
+                ORDER BY item_key
+                """,
+                (run_id, stage),
+            ).fetchall()
+        return {
+            item_key: {
+                "status": status,
+                "error_msg": error_msg,
+                "updated_at": updated_at,
+            }
+            for item_key, status, error_msg, updated_at in rows
+        }
+
+    def clear_checkpoint(self, run_id: str):
+        """Remove checkpoints belonging only to the specified update run."""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM update_checkpoint WHERE run_id=?", (run_id,))
 
     def save_quotes(self, code: str, df: pd.DataFrame):
         """保存日K线数据"""
