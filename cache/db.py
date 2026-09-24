@@ -104,8 +104,7 @@ class CacheDB:
                     PRIMARY KEY (run_id, stage, item_key)
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_quotes_code_date
-                    ON stock_quotes(code, date);
+                DROP INDEX IF EXISTS idx_quotes_code_date;
                 CREATE INDEX IF NOT EXISTS idx_financials_code_publish
                     ON stock_financials(code, publish_date);
                 CREATE INDEX IF NOT EXISTS idx_quarterly_code_publish
