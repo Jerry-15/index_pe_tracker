@@ -24,5 +24,8 @@ Thumbs.db
 .vscode/
 *.swp
 
+# Git worktrees
+.worktrees/
+
 # 日志
 *.log
