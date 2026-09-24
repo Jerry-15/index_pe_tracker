@@ -201,6 +201,7 @@ class PEETL:
         stocks: List[Dict],
         quotes_cache: Dict[str, pd.DataFrame],
         progress_cb=None,
+        allow_weekday_fallback: bool = False,
     ) -> pd.DataFrame:
         """向量化 PE 计算，按日期动态计算 TTM（bisect 快速查找）"""
         from bisect import bisect_right
@@ -219,6 +220,18 @@ class PEETL:
         combined = pd.concat(all_quotes, ignore_index=True)
         combined["date"] = pd.to_datetime(combined["date"])
         combined = combined.sort_values(["date", "stock_code"])
+
+        # Quote feeds can contain non-trading dates; only calculate on the
+        # source calendar. Production mode propagates calendar failures.
+        calendar = self.source.get_trading_dates(
+            start_date=combined["date"].min().strftime("%Y-%m-%d"),
+            end_date=combined["date"].max().strftime("%Y-%m-%d"),
+            allow_weekday_fallback=allow_weekday_fallback,
+        )
+        trading_dates = set(pd.to_datetime(calendar["date"]).dt.normalize())
+        combined = combined[combined["date"].dt.normalize().isin(trading_dates)]
+        if combined.empty:
+            return pd.DataFrame()
 
         close_mat = combined.pivot(index="date", columns="stock_code", values="close")
         share_mat = combined.pivot(index="date", columns="stock_code", values="outstanding_share")
