@@ -194,3 +194,29 @@ def test_old_pe_daily_schema_migrates_validity_columns(tmp_path):
         columns = {row[1] for row in conn.execute("PRAGMA table_info(index_pe_daily)")}
 
     assert {"valid_stock_count", "profitable_stock_count", "coverage_ratio", "validity_reason"} <= columns
+
+
+def test_coverage_uses_all_constituents_as_denominator(tmp_path):
+    from cache.db import CacheDB
+
+    cache = CacheDB(tmp_path / "pe.db")
+    etl = PEETL(cache)
+    etl.source.get_trading_dates = lambda **kwargs: pd.DataFrame(
+        {"date": pd.to_datetime(["2025-01-02"])}
+    )
+    cache.save_quarterly_profits("600519", pd.DataFrame([
+        {"report_date": pd.Timestamp("2024-09-30"), "quarter_profit": 50.0,
+         "publish_date": pd.Timestamp("2024-10-01")},
+        {"report_date": pd.Timestamp("2024-12-31"), "quarter_profit": 100.0,
+         "publish_date": pd.Timestamp("2025-01-01")},
+    ]))
+    result = etl._vectorized_compute_pe(
+        [{"code": "600519", "name": "A"}, {"code": "000001", "name": "B"}],
+        {"600519": pd.DataFrame([{"date": "2025-01-02", "close": 10.0,
+                                   "outstanding_share": 100.0}])},
+    )
+
+    assert result.loc[0, "valid_stock_count"] == 1
+    assert result.loc[0, "profitable_stock_count"] == 1
+    assert result.loc[0, "coverage_ratio"] == 0.5
+    assert result.loc[0, "validity_reason"] == "valid"

@@ -218,7 +218,8 @@ class PEETL:
             return pd.DataFrame()
 
         combined = pd.concat(all_quotes, ignore_index=True)
-        combined["date"] = pd.to_datetime(combined["date"])
+        combined["date"] = pd.to_datetime(combined["date"], errors="coerce").dt.normalize()
+        combined = combined.dropna(subset=["date"])
         combined = combined.sort_values(["date", "stock_code"])
 
         # Quote feeds can contain non-trading dates; only calculate on the
@@ -275,7 +276,8 @@ class PEETL:
         n_dates = len(dates)
         n_stocks = len(valid_codes)
         trade_dates_ns = np.array([pd.Timestamp(d).value for d in dates])
-        min_required = max(1, int(np.ceil(n_stocks * 0.3)))
+        constituent_count = len(stocks)
+        min_required = max(1, int(np.ceil(constituent_count * 0.3)))
 
         if progress_cb:
             progress_cb(f"计算 {n_dates} 个交易日 × {n_stocks} 只股票的 PE...")
@@ -305,7 +307,7 @@ class PEETL:
                     total_ttm += ttm_vals_arr[j][idx]
                     profitable_stock_count += 1
 
-            coverage_ratio = profitable_stock_count / n_stocks if n_stocks else 0.0
+            coverage_ratio = profitable_stock_count / constituent_count if constituent_count else 0.0
             pe = total_mv / total_ttm if total_ttm > 0 else np.nan
             reasons = []
             if profitable_stock_count < min_required:

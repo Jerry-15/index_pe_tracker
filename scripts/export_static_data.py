@@ -7,6 +7,7 @@
 用法: python scripts/export_static_data.py
 """
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -50,6 +51,7 @@ def export_all():
         index_list.append({
             "code": code, "name": name, "type": "index",
             "pe_ref": _get_reference_pe(source, name),
+            **_validity_metadata(pe_df),
         })
 
     # 申万行业
@@ -71,34 +73,69 @@ def export_all():
         _save(code, rows)
         index_list.append({
             "code": code, "name": name, "type": "industry",
-            "pe_ref": float(r["pe_ttm"]) if pd.notna(r["pe_ttm"]) else None,
+            "pe_ref": _finite_float(r["pe_ttm"]),
+            **_validity_metadata(pe_df),
         })
 
     # 保存指数列表
     with open(OUT / "index_list.json", "w", encoding="utf-8") as f:
-        json.dump(index_list, f, ensure_ascii=False, indent=1)
+        json.dump(index_list, f, ensure_ascii=False, indent=1, allow_nan=False)
 
     print(f"导出完成: {len(index_list)} 个指数/行业 -> {OUT}")
 
 
 def _to_rows(pe_df: pd.DataFrame) -> list:
-    """转换为紧凑行数组 [date, pe, mean, high, low, pct, mv, profit]"""
+    """转换为JSON安全行数组，尾部保留PE有效性元数据。"""
     df = pe_df.sort_values("trade_date").tail(MAX_DAYS)
     rows = []
     for _, r in df.iterrows():
-        mean = float(r["pe_mean"]) if pd.notna(r.get("pe_mean")) else None
-        high = float(r["pe_high_line"]) if pd.notna(r.get("pe_high_line")) else None
-        low = float(r["pe_low_line"]) if pd.notna(r.get("pe_low_line")) else None
-        pct = float(r["pe_percentile"]) if pd.notna(r.get("pe_percentile")) else None
-        mv = float(r["total_market_cap"]) if pd.notna(r.get("total_market_cap")) else None
-        profit = float(r["total_profit_ttm"]) if pd.notna(r.get("total_profit_ttm")) else None
-        rows.append([r["trade_date"], round(float(r["pe_ratio"]), 3), mean, high, low, pct, mv, profit])
+        mean = _finite_float(r.get("pe_mean"))
+        high = _finite_float(r.get("pe_high_line"))
+        low = _finite_float(r.get("pe_low_line"))
+        pct = _finite_float(r.get("pe_percentile"))
+        mv = _finite_float(r.get("total_market_cap"))
+        profit = _finite_float(r.get("total_profit_ttm"))
+        pe = _finite_float(r.get("pe_ratio"))
+        rows.append([
+            r["trade_date"], round(pe, 3) if pe is not None else None,
+            mean, high, low, pct, mv, profit,
+            _optional_int(r.get("valid_stock_count")),
+            _optional_int(r.get("profitable_stock_count")),
+            _optional_float(r.get("coverage_ratio")),
+            r.get("validity_reason") if pd.notna(r.get("validity_reason")) else None,
+        ])
     return rows
 
 
 def _save(code: str, rows: list):
     with open(OUT / f"{code}.json", "w", encoding="utf-8") as f:
-        json.dump(rows, f)
+        json.dump(rows, f, allow_nan=False)
+
+
+def _optional_int(value):
+    value = _finite_float(value)
+    return int(value) if value is not None else None
+
+
+def _optional_float(value):
+    return _finite_float(value)
+
+
+def _finite_float(value):
+    if pd.isna(value):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+def _validity_metadata(pe_df: pd.DataFrame) -> dict:
+    latest = pe_df.sort_values("trade_date").iloc[-1]
+    return {
+        "valid_stock_count": _optional_int(latest.get("valid_stock_count")),
+        "profitable_stock_count": _optional_int(latest.get("profitable_stock_count")),
+        "coverage_ratio": _optional_float(latest.get("coverage_ratio")),
+        "validity_reason": latest.get("validity_reason") if pd.notna(latest.get("validity_reason")) else None,
+    }
 
 
 def _get_reference_pe(source, index_name: str) -> float | None:
@@ -110,7 +147,7 @@ def _get_reference_pe(source, index_name: str) -> float | None:
     try:
         df = source.get_index_pe_history(ref_name)
         if df is not None and not df.empty:
-            return float(df["pe_ttm"].iloc[-1])
+            return _finite_float(df["pe_ttm"].iloc[-1])
     except Exception:
         pass
     return None
