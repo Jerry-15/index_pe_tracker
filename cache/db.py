@@ -68,6 +68,10 @@ class CacheDB:
                     total_profit_ttm REAL,
                     pe_ratio REAL,
                     stock_count INTEGER,
+                    valid_stock_count INTEGER,
+                    profitable_stock_count INTEGER,
+                    coverage_ratio REAL,
+                    validity_reason TEXT,
                     updated_at REAL,
                     PRIMARY KEY (trade_date, index_code)
                 );
@@ -114,6 +118,15 @@ class CacheDB:
                 CREATE INDEX IF NOT EXISTS idx_pe_stats_index_date
                     ON index_pe_stats(index_code, trade_date);
             """)
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(index_pe_daily)")}
+            for name, definition in (
+                ("valid_stock_count", "INTEGER"),
+                ("profitable_stock_count", "INTEGER"),
+                ("coverage_ratio", "REAL"),
+                ("validity_reason", "TEXT"),
+            ):
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE index_pe_daily ADD COLUMN {name} {definition}")
 
     def save_checkpoint(
         self,
@@ -311,10 +324,17 @@ class CacheDB:
                     row["trade_date"], index_code,
                     row.get("total_market_cap"), row.get("total_profit_ttm"),
                     row.get("pe_ratio"), row.get("stock_count"),
+                    row.get("valid_stock_count", row.get("stock_count")),
+                    row.get("profitable_stock_count"), row.get("coverage_ratio"),
+                    row.get("validity_reason"),
                     time.time()
                 ))
             conn.executemany(
-                "INSERT OR REPLACE INTO index_pe_daily VALUES (?,?,?,?,?,?,?)",
+                """INSERT OR REPLACE INTO index_pe_daily
+                   (trade_date, index_code, total_market_cap, total_profit_ttm,
+                    pe_ratio, stock_count, valid_stock_count, profitable_stock_count,
+                    coverage_ratio, validity_reason, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 records
             )
 
