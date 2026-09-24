@@ -189,11 +189,29 @@ def test_old_pe_daily_schema_migrates_validity_columns(tmp_path):
             )
         """)
 
-    CacheDB(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO index_pe_daily VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("2025-01-02", "000300", 1000.0, 100.0, 10.0, 2, 1.0),
+        )
+
+    cache = CacheDB(path)
     with sqlite3.connect(path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(index_pe_daily)")}
 
     assert {"valid_stock_count", "profitable_stock_count", "coverage_ratio", "validity_reason"} <= columns
+
+    legacy = cache.load_pe_daily("000300")
+    assert legacy.loc[0, "trade_date"] == "2025-01-02"
+    cache.save_pe_daily("000300", pd.DataFrame([{
+        "trade_date": "2025-01-03", "total_market_cap": 2000.0,
+        "total_profit_ttm": 200.0, "pe_ratio": 10.0, "stock_count": 2,
+        "valid_stock_count": 2, "profitable_stock_count": 2,
+        "coverage_ratio": 1.0, "validity_reason": "valid",
+    }]))
+    saved = cache.load_pe_daily("000300")
+    assert saved.loc[0, "validity_reason"] == "valid"
+    assert saved.loc[0, "profitable_stock_count"] == 2
 
 
 def test_coverage_uses_all_constituents_as_denominator(tmp_path):
@@ -220,3 +238,24 @@ def test_coverage_uses_all_constituents_as_denominator(tmp_path):
     assert result.loc[0, "profitable_stock_count"] == 1
     assert result.loc[0, "coverage_ratio"] == 0.5
     assert result.loc[0, "validity_reason"] == "valid"
+
+
+def test_quote_dates_are_normalized_and_logical_duplicates_are_collapsed(tmp_path):
+    from cache.db import CacheDB
+
+    cache = CacheDB(tmp_path / "quotes.db")
+    quotes = pd.DataFrame([
+        {"date": pd.Timestamp("2025-01-02 09:30"), "close": 10.0},
+        {"date": "2025-01-02", "close": 11.0},
+    ])
+
+    cache.save_quotes("600519", quotes)
+    loaded = cache.load_quotes("600519")
+
+    assert loaded["date"].tolist() == ["2025-01-02"]
+    assert loaded.loc[0, "close"] == 11.0
+
+    cache.upsert_quotes("600519", pd.DataFrame([
+        {"date": pd.Timestamp("2025-01-02 15:00"), "close": 12.0},
+    ]))
+    assert cache.load_quotes("600519")["date"].tolist() == ["2025-01-02"]

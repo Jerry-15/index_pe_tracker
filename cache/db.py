@@ -181,6 +181,9 @@ class CacheDB:
         """保存日K线数据"""
         if df.empty:
             return
+        df = self._normalize_quote_dates(df)
+        if df.empty:
+            return
         with self._conn() as conn:
             conn.execute("DELETE FROM stock_quotes WHERE code=?", (code,))
             records = []
@@ -214,6 +217,9 @@ class CacheDB:
         """增量合并日K线（只插入新日期，不删除已有）"""
         if df.empty:
             return
+        df = self._normalize_quote_dates(df)
+        if df.empty:
+            return
         with self._conn() as conn:
             records = []
             for _, row in df.iterrows():
@@ -227,6 +233,13 @@ class CacheDB:
                 "INSERT OR IGNORE INTO stock_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 records
             )
+
+    @staticmethod
+    def _normalize_quote_dates(df: pd.DataFrame) -> pd.DataFrame:
+        normalized = df.copy()
+        normalized["date"] = pd.to_datetime(normalized["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        normalized = normalized.dropna(subset=["date"])
+        return normalized.drop_duplicates(subset=["date"], keep="last")
 
     def save_financials(self, code: str, df: pd.DataFrame):
         """保存财务数据（含期间类型）"""

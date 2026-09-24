@@ -271,14 +271,20 @@ def main():
 
         # 数据覆盖率说明
         total_constituents = len(get_constituents(index_code))
-        coverage = latest.get("stock_count", 0)
+        quote_coverage = latest.get("valid_stock_count", latest.get("stock_count", 0))
+        profitable_coverage = latest.get("profitable_stock_count", 0)
+        coverage_ratio = latest.get("coverage_ratio")
+        if pd.notna(coverage_ratio):
+            coverage_text = f"盈利TTM覆盖：{profitable_coverage}/{total_constituents} 只（{coverage_ratio:.1%}）"
+        else:
+            coverage_text = f"盈利TTM覆盖：{profitable_coverage}/{total_constituents} 只"
         ref_text = ""
         if reference_df is not None and not reference_df.empty:
             ref_text = (f" | 参考PE对比：自下而上 {latest['pe_ratio']:.2f}"
                         f" vs 月度参考 {reference_df['pe_ttm'].iloc[-1]:.2f}")
         elif industry_pe_ref is not None:
             ref_text = f" | 申万官方参考PE: {industry_pe_ref:.2f}"
-        st.caption(f"📊 数据覆盖：{coverage}/{total_constituents} 只成分股 | "
+        st.caption(f"📊 行情覆盖：{quote_coverage}/{total_constituents} 只 | {coverage_text} | "
                    f"更新至 {latest['trade_date']}{ref_text}")
 
         st.divider()
@@ -353,17 +359,22 @@ def main():
 
         # 数据表格
         with st.expander("📋 查看原始数据"):
-            cols = ["trade_date", "pe_ratio", "total_market_cap", "total_profit_ttm", "stock_count"]
+            cols = ["trade_date", "pe_ratio", "total_market_cap", "total_profit_ttm",
+                    "valid_stock_count", "profitable_stock_count", "coverage_ratio",
+                    "validity_reason"]
             if "pe_percentile" in pe_df.columns:
                 cols.append("pe_percentile")
             show_df = pe_df[cols].copy()
             rename_map = {"trade_date": "日期", "pe_ratio": "PE(TTM)",
                           "total_market_cap": "总市值(元)", "total_profit_ttm": "总利润TTM(元)",
-                          "stock_count": "成分股数", "pe_percentile": "PE百分位"}
+                           "valid_stock_count": "行情覆盖数", "profitable_stock_count": "盈利TTM覆盖数",
+                           "coverage_ratio": "盈利TTM覆盖率", "validity_reason": "有效性原因",
+                           "pe_percentile": "PE百分位"}
             show_df = show_df.rename(columns=rename_map)
             show_df["总市值(亿)"] = (show_df["总市值(元)"] / 1e8).round(2)
             show_df["总利润TTM(亿)"] = (show_df["总利润TTM(元)"] / 1e8).round(2)
-            out_cols = ["日期", "PE(TTM)", "总市值(亿)", "总利润TTM(亿)", "成分股数"]
+            out_cols = ["日期", "PE(TTM)", "总市值(亿)", "总利润TTM(亿)",
+                        "行情覆盖数", "盈利TTM覆盖数", "盈利TTM覆盖率", "有效性原因"]
             if "PE百分位" in show_df.columns:
                 show_df["PE百分位"] = show_df["PE百分位"].round(1)
                 out_cols.append("PE百分位")
