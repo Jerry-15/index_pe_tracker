@@ -28,7 +28,7 @@ def test_standard_formula_matches_decomposed_quarter_ttm(ttm_fixture):
 
     assert decomposed is not None
     assert standard is not None
-    assert abs(decomposed - standard) / standard < 0.01
+    assert abs(decomposed - standard) < 1e-9
 
 
 def test_ttm_methods_return_none_when_reports_are_insufficient(ttm_fixture):
