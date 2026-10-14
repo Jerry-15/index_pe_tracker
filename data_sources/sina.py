@@ -136,8 +136,11 @@ class SinaDataSource(DataSource):
                 if end_date:
                     df = df[df["date"] <= end_date]
                 df = df.sort_values("date").reset_index(drop=True)
-                return df[["date", "open", "high", "low", "close", "volume",
-                           "amount", "outstanding_share", "turnover"]]
+                columns = ["date", "open", "high", "low", "close", "volume",
+                           "amount", "outstanding_share", "turnover"]
+                result = df.reindex(columns=columns)
+                result["outstanding_share"] = result["outstanding_share"].replace(0, float("nan"))
+                return result
             except Exception as e:
                 if attempt < API_RETRY_TIMES - 1:
                     time.sleep(API_RETRY_DELAY * (attempt + 1))

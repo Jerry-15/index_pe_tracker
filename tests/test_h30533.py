@@ -5,6 +5,7 @@ import pandas as pd
 import requests
 
 from data_sources.h30533 import H30533Source, H30533SourceError
+from data_sources.sina import SinaDataSource
 from data_sources.us import USDataSource
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
 
@@ -218,6 +219,29 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result["security_code"].tolist(), ["09988.HK"])
         self.assertEqual(result["issuer_id"].tolist(), ["ALIBABA"])
 
+    def test_get_snapshot_prefers_ordinary_and_preserves_duplicate_metadata(self):
+        source = H30533Source()
+        rows = [
+            {"code": "BABA", "name": "Alibaba ADR", "exchange": "US", "weight": 3,
+             "issuer_id": "ALIBABA", "security_type": "adr", "ads_ratio": 8,
+             "diagnostic": "adr row"},
+            {"code": "09988", "name": "Alibaba HK", "exchange": "HK", "weight": 4,
+             "issuer_id": "ALIBABA", "security_type": "ordinary",
+             "diagnostic": "ordinary row"},
+        ]
+        result = source.deduplicate_issuers(source.parse_official({
+            "data": {"indexCode": CHINA_INTL_INDEX_CODE, "asOfDate": "2026-10-13",
+                     "constituents": rows}
+        }))
+
+        self.assertEqual(result["security_code"].tolist(), ["09988.HK"])
+        metadata = result.iloc[0]["raw_metadata"]
+        self.assertEqual(len(metadata["duplicate_issuer_rows"]), 2)
+        self.assertEqual(
+            {row["diagnostic"] for row in metadata["duplicate_issuer_rows"]},
+            {"adr row", "ordinary row"},
+        )
+
     def test_invalid_ads_metadata_is_rejected(self):
         source = H30533Source()
         result = source.parse_official({
@@ -384,7 +408,8 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(record["currency"], "USD")
         self.assertIsNone(record["shares_or_market_cap"])
         self.assertIn("missing shares_or_market_cap", record["validity_reason"])
-        self.assertEqual(record["profit_ttm"], 2.0)
+        self.assertIsNone(record["profit_ttm"])
+        self.assertEqual(record["eps_ttm"], 2.0)
         self.assertEqual(record["financial_as_of"], "2026-09-30")
         self.assertEqual(record["source"], "akshare")
         self.assertEqual(record["ads_ratio"], 8.0)
@@ -418,6 +443,39 @@ class H30533SourceTests(unittest.TestCase):
 
         self.assertIn("invalid ads_ratio", record["validity_reason"])
         self.assertNotIn("pe", record)
+
+    def test_current_pe_unknown_us_inputs_are_missing_not_defaulted(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+             patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                 "EPS_TTM": 2.0, "REPORT_DATE": "2026-09-30",
+             }])):
+            record = source.get_current_pe("UNKNOWN")
+
+        self.assertIsNone(record["ads_ratio"])
+        self.assertIsNone(record["currency"])
+        self.assertIsNone(record["profit_ttm"])
+        self.assertEqual(record["eps_ttm"], 2.0)
+        self.assertIn("missing currency", record["validity_reason"])
+        self.assertIn("missing ads_ratio", record["validity_reason"])
+
+    def test_daily_quotes_preserve_unavailable_outstanding_shares(self):
+        source = USDataSource()
+        with patch("data_sources.us.ak.stock_us_daily", return_value=pd.DataFrame([
+            {"date": "2026-10-13", "close": 80.0},
+        ])):
+            quotes = source.get_daily_quotes("UNKNOWN")
+
+        self.assertTrue(pd.isna(quotes.loc[0, "outstanding_share"]))
+
+    def test_sina_daily_quotes_preserve_missing_outstanding_shares(self):
+        source = SinaDataSource()
+        with patch("data_sources.sina.ak.stock_zh_a_daily", return_value=pd.DataFrame([
+            {"date": "2026-10-13", "close": 10.0, "outstanding_share": 0.0},
+        ])):
+            quotes = source.get_daily_quotes("600000")
+
+        self.assertTrue(pd.isna(quotes.loc[0, "outstanding_share"]))
 
 
 if __name__ == "__main__":

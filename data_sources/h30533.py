@@ -214,7 +214,33 @@ class H30533Source:
         """Return one official security per explicitly identified issuer."""
         if snapshot.empty:
             return snapshot.copy()
-        return snapshot.loc[~snapshot["is_duplicate_issuer"]].copy().reset_index(drop=True)
+        selected = []
+        for issuer_id, group in snapshot.groupby("issuer_id", dropna=False, sort=False):
+            if pd.isna(issuer_id):
+                selected.extend(group.to_dict("records"))
+                continue
+            ranked = group.assign(
+                _ordinary=group["security_type"].fillna("").str.strip().str.lower().isin(
+                    {"ordinary", "common", "common_stock"}
+                ).astype(int)
+            ).sort_values(["_ordinary", "security_code"], ascending=[False, True], kind="stable")
+            row = ranked.iloc[0].drop(labels="_ordinary").to_dict()
+            metadata = dict(row.get("raw_metadata") or {})
+            metadata["duplicate_issuer_rows"] = [
+                dict(item.get("raw_metadata") or {}) for item in group.to_dict("records")
+            ]
+            metadata["duplicate_issuer_rows"] = sorted(
+                metadata["duplicate_issuer_rows"],
+                key=lambda item: str(item.get("security_code", item.get("code", ""))),
+            )
+            row["raw_metadata"] = metadata
+            row["is_duplicate_issuer"] = False
+            selected.append(row)
+        return (
+            pd.DataFrame(selected, columns=snapshot.columns)
+            .sort_values("security_code", kind="stable")
+            .reset_index(drop=True)
+        )
 
     @staticmethod
     def _validate_index_identity(payload: Any, source_type: str) -> None:

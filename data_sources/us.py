@@ -48,6 +48,8 @@ class USDataSource:
             missing.append("financial_as_of")
         if ads_ratio is not None and (not math.isfinite(ads_ratio) or ads_ratio <= 0):
             missing.append("invalid ads_ratio")
+        elif ads_ratio is None:
+            missing.append("ads_ratio")
         return {
             "code": code,
             "price": price,
@@ -57,6 +59,7 @@ class USDataSource:
             "financial_as_of": financial_as_of,
             "source": source,
             "ads_ratio": ads_ratio,
+            "eps_ttm": None,
             "validity_reason": "; ".join(
                 f"missing {field}" if field != "invalid ads_ratio" else field
                 for field in missing
@@ -120,7 +123,7 @@ class USDataSource:
                     keep = ["date", "open", "high", "low", "close", "volume", "amount"]
                     existing = [c for c in keep if c in df.columns]
                     df = df[existing]
-                    df["outstanding_share"] = 0.0
+                    df["outstanding_share"] = float("nan")
                     if start_date:
                         df = df[df["date"] >= start_date]
                     if end_date:
@@ -145,7 +148,7 @@ class USDataSource:
                     keep = ["date", "open", "high", "low", "close", "volume", "amount"]
                     existing = [c for c in keep if c in df.columns]
                     df = df[existing]
-                    df["outstanding_share"] = 0.0
+                    df["outstanding_share"] = float("nan")
                     if start_date:
                         df = df[df["date"] >= start_date]
                     if end_date:
@@ -187,10 +190,16 @@ class USDataSource:
 
     def get_current_pe(self, stock_code: str) -> dict:
         """获取当前 PE，并始终返回统一的行情/财务输入记录。"""
-        ads_ratio = float(self.ADS_RATIO.get(stock_code.replace(".HK", ""), 1))
+        symbol = stock_code.replace(".HK", "")
+        ads_ratio = 1.0 if self._is_hk(stock_code) else (
+            float(self.ADS_RATIO[symbol]) if symbol in self.ADS_RATIO else None
+        )
         price = None
-        currency = "HKD" if self._is_hk(stock_code) else "CNY"
+        currency = "HKD" if self._is_hk(stock_code) else (
+            "USD" if symbol in self.ADS_RATIO else None
+        )
         eps_ttm = None
+        profit_ttm = None
         financial_as_of = None
         try:
             quotes = self.get_daily_quotes(stock_code)
@@ -207,6 +216,13 @@ class USDataSource:
                 for col in ("EPS_TTM", "BASIC_EPS"):
                     if col in fin.columns and pd.notna(fin.iloc[0][col]):
                         eps_ttm = float(fin.iloc[0][col])
+                        break
+                for col in (
+                    "PROFIT_TTM", "NET_PROFIT_TTM", "TTM_NET_PROFIT",
+                    "profit_ttm", "net_profit_ttm", "ttm_net_profit",
+                ):
+                    if col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        profit_ttm = float(fin.iloc[0][col])
                         break
                 for col in ("REPORT_DATE", "report_date", "REPORT_PERIOD", "date", "日期"):
                     if col in fin.columns and pd.notna(fin.iloc[0][col]):
@@ -225,13 +241,19 @@ class USDataSource:
 
         record = self.build_input_record(
             stock_code, round(price, 2) if price is not None else None, currency,
-            None, eps_ttm, financial_as_of,
+            None, profit_ttm, financial_as_of,
             "akshare", ads_ratio,
         )
-        if record["validity_reason"] or eps_ttm is None or eps_ttm <= 0:
+        record["eps_ttm"] = round(eps_ttm, 4) if eps_ttm is not None else None
+        record["eps"] = record["eps_ttm"]
+        pe_inputs_missing = any(
+            record[field] is None
+            for field in ("price", "currency", "shares_or_market_cap", "ads_ratio")
+        )
+        if pe_inputs_missing or eps_ttm is None or eps_ttm <= 0:
             if eps_ttm is not None and eps_ttm <= 0:
                 record["validity_reason"] = "; ".join(
-                    filter(None, [record["validity_reason"], "non_positive profit_ttm"])
+                    filter(None, [record["validity_reason"], "non_positive eps_ttm"])
                 )
             return record
 
