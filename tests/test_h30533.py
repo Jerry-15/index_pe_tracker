@@ -1,4 +1,7 @@
 import unittest
+import sqlite3
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -9,9 +12,174 @@ from data_sources.sina import SinaDataSource
 from data_sources.us import USDataSource
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
 from etl.pipeline_us import aggregate_h30533, USETL
+from cache.db import CacheDB
 
 
 class H30533SourceTests(unittest.TestCase):
+    def test_h30533_snapshot_round_trips_all_valuation_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = CacheDB(Path(directory) / "h30533.db")
+            constituents = pd.DataFrame([{
+                "security_code": "BABA", "name": "Alibaba", "exchange": "US",
+                "weight": 0.8, "issuer_id": "ALIBABA", "security_type": "adr",
+                "ads_ratio": 8.0, "source_type": "csi_official",
+                "as_of": "2026-10-13", "raw_metadata": {"rank": 1},
+            }])
+            daily = pd.DataFrame([{
+                "trade_date": "2026-10-14", "index_code": "H30533",
+                "pe_ratio": 12.5, "earnings_yield": 0.08, "total_market_cap": 800.0,
+                "total_profit_ttm": 64.0, "stock_count": 1,
+                "weight_coverage": 0.8, "negative_profit_count": 0,
+                "missing_count": 0, "source_type": "csi_official",
+                "source_date": "2026-10-13", "constituent_basis": "official",
+                "validity_reason": None,
+            }])
+            securities = pd.DataFrame([{
+                "security_code": "BABA", "name": "Alibaba", "issuer_id": "ALIBABA",
+                "weight": 0.8, "price": 80.0, "market_cap": 800.0,
+                "verified_shares": 10.0, "profit_ttm": 64.0,
+                "earnings_yield": 0.08, "pe": 12.5,
+                "financial_as_of": "2026-09-30", "source_date": "2026-10-14",
+                "source_type": "akshare", "validity_reason": None,
+            }])
+
+            cache.save_h30533_snapshot("H30533", constituents, daily, securities)
+
+            loaded = cache.load_h30533_snapshot("H30533")
+            self.assertEqual(loaded["constituents"].loc[0, "security_code"], "BABA")
+            self.assertEqual(loaded["constituents"].loc[0, "raw_metadata"], {"rank": 1})
+            self.assertAlmostEqual(loaded["daily"].loc[0, "earnings_yield"], 0.08)
+            self.assertEqual(loaded["daily"].loc[0, "source_date"], "2026-10-13")
+            self.assertAlmostEqual(loaded["securities"].loc[0, "verified_shares"], 10.0)
+            self.assertEqual(loaded["securities"].loc[0, "financial_as_of"], "2026-09-30")
+
+    def test_h30533_snapshot_migrates_legacy_schema_and_ignores_extra_columns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.db"
+            with sqlite3.connect(path) as conn:
+                conn.execute("""CREATE TABLE h30533_daily_valuation (
+                    trade_date TEXT NOT NULL, index_code TEXT NOT NULL,
+                    pe_ratio REAL, legacy_extra TEXT,
+                    PRIMARY KEY (trade_date, index_code)
+                )""")
+            cache = CacheDB(path)
+            cache.save_h30533_daily("H30533", pd.DataFrame([{
+                "trade_date": "2026-10-14", "pe_ratio": 12.5,
+                "earnings_yield": 0.08, "source_date": "2026-10-13",
+            }]))
+
+            with sqlite3.connect(path) as conn:
+                columns = {row[1] for row in conn.execute(
+                    "PRAGMA table_info(h30533_daily_valuation)"
+                )}
+            self.assertIn("legacy_extra", columns)
+            self.assertEqual(cache.load_h30533_daily("H30533").loc[0, "pe_ratio"], 12.5)
+
+    def test_h30533_migrates_every_core_column_and_round_trips_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.db"
+            with sqlite3.connect(path) as conn:
+                conn.executescript("""
+                    CREATE TABLE h30533_constituent_snapshot (
+                        snapshot_date TEXT NOT NULL, index_code TEXT NOT NULL,
+                        security_code TEXT NOT NULL, legacy_constituent TEXT,
+                        PRIMARY KEY (snapshot_date, index_code, security_code)
+                    );
+                    CREATE TABLE h30533_daily_valuation (
+                        trade_date TEXT NOT NULL, index_code TEXT NOT NULL,
+                        legacy_daily TEXT,
+                        PRIMARY KEY (trade_date, index_code)
+                    );
+                    CREATE TABLE h30533_security_valuation (
+                        snapshot_date TEXT NOT NULL, index_code TEXT NOT NULL,
+                        security_code TEXT NOT NULL, legacy_security TEXT,
+                        PRIMARY KEY (snapshot_date, index_code, security_code)
+                    );
+                """)
+
+            cache = CacheDB(path)
+            constituents = pd.DataFrame([{
+                "security_code": "BABA", "name": "Alibaba", "exchange": "US",
+                "weight": 0.8, "issuer_id": "ALIBABA", "security_type": "adr",
+                "ads_ratio": 8.0, "source_type": "csi_official",
+                "as_of": "2026-10-13", "constituent_as_of": "2026-10-13",
+                "raw_metadata": {"rank": 1}, "validity_reason": "valid",
+            }])
+            daily = pd.DataFrame([{
+                "trade_date": "2026-10-14", "index_code": "H30533",
+                "pe_ratio": 12.5, "index_pe": 12.5, "earnings_yield": 0.08,
+                "total_market_cap": 800.0, "total_profit_ttm": 64.0,
+                "stock_count": 1, "valid_count": 1, "weight_coverage": 0.8,
+                "negative_profit_count": 0, "missing_count": 0,
+                "source_type": "csi_official", "source_date": "2026-10-13",
+                "constituent_as_of": "2026-10-13", "constituent_basis": "official",
+                "validity_reason": "valid",
+            }])
+            securities = pd.DataFrame([{
+                "security_code": "BABA", "name": "Alibaba", "issuer_id": "ALIBABA",
+                "weight": 0.8, "price": 80.0, "currency": "USD", "market_cap": 800.0,
+                "verified_shares": 10.0, "profit_ttm": 64.0, "earnings_yield": 0.08,
+                "index_pe": 12.5, "pe": 12.5, "financial_as_of": "2026-09-30",
+                "source_date": "2026-10-14", "source_type": "akshare",
+                "source": "USDataSource", "data_source": "akshare",
+                "validity_reason": "valid",
+            }])
+
+            cache.save_h30533_snapshot("H30533", constituents, daily, securities)
+            loaded = cache.load_h30533_snapshot("H30533")
+
+            self.assertEqual(loaded["constituents"].loc[0, "constituent_as_of"], "2026-10-13")
+            self.assertEqual(loaded["constituents"].loc[0, "raw_metadata"], {"rank": 1})
+            self.assertEqual(loaded["daily"].loc[0, "valid_count"], 1)
+            self.assertAlmostEqual(loaded["daily"].loc[0, "index_pe"], 12.5)
+            self.assertEqual(loaded["securities"].loc[0, "currency"], "USD")
+            self.assertEqual(loaded["securities"].loc[0, "source"], "USDataSource")
+            self.assertEqual(loaded["securities"].loc[0, "data_source"], "akshare")
+
+            expected_columns = {
+                "h30533_constituent_snapshot": {
+                    "snapshot_date", "index_code", "security_code", "name", "exchange",
+                    "weight", "issuer_id", "security_type", "ads_ratio", "source_type",
+                    "as_of", "constituent_as_of", "raw_metadata", "validity_reason",
+                    "legacy_constituent",
+                },
+                "h30533_daily_valuation": {
+                    "trade_date", "index_code", "pe_ratio", "index_pe", "earnings_yield",
+                    "total_market_cap", "total_profit_ttm", "stock_count", "valid_count",
+                    "weight_coverage", "negative_profit_count", "missing_count", "source_type",
+                    "source_date", "constituent_as_of", "constituent_basis", "validity_reason",
+                    "updated_at", "legacy_daily",
+                },
+                "h30533_security_valuation": {
+                    "snapshot_date", "index_code", "security_code", "name", "issuer_id",
+                    "weight", "price", "currency", "market_cap", "verified_shares", "profit_ttm",
+                    "earnings_yield", "index_pe", "pe", "financial_as_of", "source_date",
+                    "source_type", "source", "data_source", "validity_reason", "legacy_security",
+                },
+            }
+            with sqlite3.connect(path) as conn:
+                for table, columns in expected_columns.items():
+                    actual = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                    self.assertTrue(columns <= actual, (table, columns - actual))
+
+    def test_failed_h30533_replacement_keeps_last_valid_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = CacheDB(Path(directory) / "h30533.db")
+            valid = pd.DataFrame([{
+                "trade_date": "2026-10-14", "index_code": "H30533",
+                "pe_ratio": 12.5,
+            }])
+            cache.save_h30533_daily("H30533", valid)
+
+            with self.assertRaises((KeyError, ValueError)):
+                cache.save_h30533_daily("H30533", pd.DataFrame([{
+                    "trade_date": "2026-10-15", "not_a_column": 1,
+                }]))
+
+            self.assertEqual(
+                cache.load_h30533_daily("H30533").loc[0, "trade_date"], "2026-10-14"
+            )
+
     def test_aggregate_h30533_uses_weighted_earnings_yield(self):
         rows = pd.DataFrame([
             {"weight": 0.25, "market_cap": 100.0, "profit_ttm": 10.0},

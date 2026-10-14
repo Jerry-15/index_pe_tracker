@@ -144,6 +144,7 @@ class CacheDB:
                 ads_ratio REAL,
                 source_type TEXT,
                 as_of TEXT,
+                constituent_as_of TEXT,
                 raw_metadata TEXT,
                 validity_reason TEXT,
                 PRIMARY KEY (snapshot_date, index_code, security_code)
@@ -152,15 +153,18 @@ class CacheDB:
                 trade_date TEXT NOT NULL,
                 index_code TEXT NOT NULL,
                 pe_ratio REAL,
+                index_pe REAL,
                 earnings_yield REAL,
                 total_market_cap REAL,
                 total_profit_ttm REAL,
                 stock_count INTEGER,
+                valid_count INTEGER,
                 weight_coverage REAL,
                 negative_profit_count INTEGER,
                 missing_count INTEGER,
                 source_type TEXT,
                 source_date TEXT,
+                constituent_as_of TEXT,
                 constituent_basis TEXT,
                 validity_reason TEXT,
                 updated_at REAL,
@@ -174,39 +178,52 @@ class CacheDB:
                 issuer_id TEXT,
                 weight REAL,
                 price REAL,
+                currency TEXT,
                 market_cap REAL,
                 verified_shares REAL,
                 profit_ttm REAL,
                 earnings_yield REAL,
+                index_pe REAL,
                 pe REAL,
                 financial_as_of TEXT,
                 source_date TEXT,
                 source_type TEXT,
+                source TEXT,
+                data_source TEXT,
                 validity_reason TEXT,
                 PRIMARY KEY (snapshot_date, index_code, security_code)
             );
         """)
         migrations = {
             "h30533_constituent_snapshot": {
+                "snapshot_date": "TEXT", "index_code": "TEXT", "security_code": "TEXT",
                 "name": "TEXT", "exchange": "TEXT", "weight": "REAL",
                 "issuer_id": "TEXT", "security_type": "TEXT", "ads_ratio": "REAL",
-                "source_type": "TEXT", "as_of": "TEXT", "raw_metadata": "TEXT",
+                "source_type": "TEXT", "as_of": "TEXT", "constituent_as_of": "TEXT",
+                "raw_metadata": "TEXT",
                 "validity_reason": "TEXT",
             },
             "h30533_daily_valuation": {
-                "earnings_yield": "REAL", "total_market_cap": "REAL",
+                "trade_date": "TEXT", "index_code": "TEXT",
+                "pe_ratio": "REAL", "index_pe": "REAL", "earnings_yield": "REAL",
+                "total_market_cap": "REAL",
                 "total_profit_ttm": "REAL", "stock_count": "INTEGER",
-                "weight_coverage": "REAL", "negative_profit_count": "INTEGER",
+                "valid_count": "INTEGER", "weight_coverage": "REAL",
+                "negative_profit_count": "INTEGER",
                 "missing_count": "INTEGER", "source_type": "TEXT",
-                "source_date": "TEXT", "constituent_basis": "TEXT",
+                "source_date": "TEXT", "constituent_as_of": "TEXT",
+                "constituent_basis": "TEXT",
                 "validity_reason": "TEXT", "updated_at": "REAL",
             },
             "h30533_security_valuation": {
+                "snapshot_date": "TEXT", "index_code": "TEXT", "security_code": "TEXT",
                 "name": "TEXT", "issuer_id": "TEXT", "weight": "REAL",
-                "price": "REAL", "market_cap": "REAL", "verified_shares": "REAL",
+                "price": "REAL", "currency": "TEXT", "market_cap": "REAL",
+                "verified_shares": "REAL",
                 "profit_ttm": "REAL", "earnings_yield": "REAL", "pe": "REAL",
-                "financial_as_of": "TEXT", "source_date": "TEXT",
-                "source_type": "TEXT", "validity_reason": "TEXT",
+                "index_pe": "REAL", "financial_as_of": "TEXT", "source_date": "TEXT",
+                "source_type": "TEXT", "source": "TEXT", "data_source": "TEXT",
+                "validity_reason": "TEXT",
             },
         }
         for table, columns in migrations.items():
@@ -225,6 +242,14 @@ class CacheDB:
         return value
 
     @staticmethod
+    def _h30533_aliases(frame, aliases):
+        frame = frame.copy()
+        for canonical, alias in aliases.items():
+            if canonical not in frame.columns and alias in frame.columns:
+                frame[canonical] = frame[alias]
+        return frame
+
+    @staticmethod
     def _h30533_insert(conn, table, columns, records):
         placeholders = ",".join("?" for _ in columns)
         names = ", ".join(columns)
@@ -241,9 +266,10 @@ class CacheDB:
             raise KeyError("trade_date")
         columns = [
             "trade_date", "index_code", "pe_ratio", "earnings_yield",
-            "total_market_cap", "total_profit_ttm", "stock_count", "weight_coverage",
+            "index_pe", "total_market_cap", "total_profit_ttm", "stock_count", "valid_count",
+            "weight_coverage",
             "negative_profit_count", "missing_count", "source_type", "source_date",
-            "constituent_basis", "validity_reason", "updated_at",
+            "constituent_as_of", "constituent_basis", "validity_reason", "updated_at",
         ]
         if not set(df.columns).intersection(set(columns[2:-1])):
             raise ValueError("H30533 daily valuation has no recognized fields")
@@ -266,21 +292,35 @@ class CacheDB:
         """Atomically replace all H30533 data after validating every input row."""
         if constituents.empty or daily.empty or securities.empty:
             raise ValueError("H30533 snapshot parts must not be empty")
+        constituents = self._h30533_aliases(
+            constituents, {"as_of": "constituent_as_of"})
+        constituents = self._h30533_aliases(
+            constituents, {"constituent_as_of": "as_of"})
+        daily = self._h30533_aliases(
+            daily, {"pe_ratio": "index_pe", "stock_count": "valid_count"})
+        daily = self._h30533_aliases(
+            daily, {"index_pe": "pe_ratio", "valid_count": "stock_count"})
+        securities = self._h30533_aliases(
+            securities, {"pe": "index_pe", "data_source": "source"})
+        securities = self._h30533_aliases(
+            securities, {"index_pe": "pe", "source": "data_source"})
         constituent_columns = [
             "snapshot_date", "index_code", "security_code", "name", "exchange", "weight",
             "issuer_id", "security_type", "ads_ratio", "source_type", "as_of",
-            "raw_metadata", "validity_reason",
+            "constituent_as_of", "raw_metadata", "validity_reason",
         ]
         daily_columns = [
-            "trade_date", "index_code", "pe_ratio", "earnings_yield", "total_market_cap",
-            "total_profit_ttm", "stock_count", "weight_coverage", "negative_profit_count",
-            "missing_count", "source_type", "source_date", "constituent_basis",
-            "validity_reason", "updated_at",
+            "trade_date", "index_code", "pe_ratio", "index_pe", "earnings_yield",
+            "total_market_cap", "total_profit_ttm", "stock_count", "valid_count",
+            "weight_coverage", "negative_profit_count", "missing_count", "source_type",
+            "source_date", "constituent_as_of", "constituent_basis", "validity_reason",
+            "updated_at",
         ]
         security_columns = [
             "snapshot_date", "index_code", "security_code", "name", "issuer_id", "weight",
-            "price", "market_cap", "verified_shares", "profit_ttm", "earnings_yield", "pe",
-            "financial_as_of", "source_date", "source_type", "validity_reason",
+            "price", "currency", "market_cap", "verified_shares", "profit_ttm",
+            "earnings_yield", "index_pe", "pe", "financial_as_of", "source_date",
+            "source_type", "source", "data_source", "validity_reason",
         ]
         constituent_date = constituents.iloc[0].get("as_of") or daily.iloc[0].get("trade_date")
         security_date = securities.iloc[0].get("source_date") or daily.iloc[0].get("trade_date")
