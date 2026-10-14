@@ -541,6 +541,69 @@ class H30533SourceTests(unittest.TestCase):
             self.assertEqual(result["securities"].iloc[0]["index_pe"], 10.0)
             self.assertEqual(result["securities"].iloc[0]["extra_security"], "kept")
 
+    def test_h30533_migrates_legacy_tables_before_full_snapshot_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "cache.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.executescript("""
+                    CREATE TABLE h30533_constituent_snapshot (
+                        snapshot_date TEXT NOT NULL, index_code TEXT NOT NULL,
+                        security_code TEXT NOT NULL, name TEXT, weight REAL,
+                        source_type TEXT, as_of TEXT, extra_constituent TEXT,
+                        PRIMARY KEY (snapshot_date, index_code, security_code)
+                    );
+                    CREATE TABLE h30533_daily_valuation (
+                        trade_date TEXT NOT NULL, index_code TEXT NOT NULL,
+                        pe_ratio REAL, stock_count INTEGER, source_type TEXT,
+                        source_date TEXT, extra_daily TEXT,
+                        PRIMARY KEY (trade_date, index_code)
+                    );
+                    CREATE TABLE h30533_security_valuation (
+                        snapshot_date TEXT NOT NULL, index_code TEXT NOT NULL,
+                        security_code TEXT NOT NULL, name TEXT, weight REAL,
+                        source_type TEXT, source_date TEXT, extra_security TEXT,
+                        PRIMARY KEY (snapshot_date, index_code, security_code)
+                    );
+                """)
+
+            cache = CacheDB(db_path)
+            constituents = pd.DataFrame([{
+                "index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA",
+                "name": "Alibaba", "weight": 0.8, "source_type": "fixture",
+                "as_of": "2026-10-13", "extra_constituent": "kept",
+            }])
+            daily = pd.DataFrame([{
+                "index_code": CHINA_INTL_INDEX_CODE, "trade_date": "2026-10-13",
+                "index_pe": 10.0, "stock_count": 1, "source_type": "fixture",
+                "source_date": "2026-10-13", "constituent_as_of": "2026-10-13",
+                "extra_daily": "kept",
+            }])
+            securities = pd.DataFrame([{
+                "index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA",
+                "name": "Alibaba", "weight": 0.8, "source_type": "fixture",
+                "source_date": "2026-10-13", "index_pe": 10.0,
+                "extra_security": "kept",
+            }])
+
+            cache.save_h30533_snapshot(CHINA_INTL_INDEX_CODE, constituents, daily, securities)
+            result = cache.load_h30533_snapshot(CHINA_INTL_INDEX_CODE)
+
+            self.assertEqual(result["constituents"].iloc[0]["extra_constituent"], "kept")
+            self.assertEqual(result["daily"].iloc[0]["index_pe"], 10.0)
+            self.assertEqual(result["daily"].iloc[0]["extra_daily"], "kept")
+            self.assertEqual(result["securities"].iloc[0]["index_pe"], 10.0)
+            self.assertEqual(result["securities"].iloc[0]["extra_security"], "kept")
+
+            with sqlite3.connect(db_path) as conn:
+                expected_extras = {
+                    "h30533_constituent_snapshot": "extra_constituent",
+                    "h30533_daily_valuation": "extra_daily",
+                    "h30533_security_valuation": "extra_security",
+                }
+                for table, extra_column in expected_extras.items():
+                    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                    self.assertIn(extra_column, columns)
+
     def test_h30533_atomic_replacement_rejects_mismatched_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             cache = CacheDB(Path(directory) / "cache.db")

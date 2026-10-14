@@ -153,6 +153,43 @@ class CacheDB:
                     PRIMARY KEY (snapshot_date, index_code, security_code)
                 );
             """)
+            self._migrate_h30533_tables(conn)
+
+    @staticmethod
+    def _migrate_h30533_tables(conn: sqlite3.Connection):
+        """Add allowlisted H30533 columns without disturbing legacy extensions."""
+        migrations = {
+            "h30533_constituent_snapshot": {
+                "snapshot_date": "TEXT", "index_code": "TEXT", "security_code": "TEXT",
+                "name": "TEXT", "exchange": "TEXT", "weight": "REAL", "issuer_id": "TEXT",
+                "security_type": "TEXT", "ads_ratio": "REAL", "source_type": "TEXT",
+                "as_of": "TEXT", "constituent_as_of": "TEXT", "raw_metadata": "TEXT",
+                "validity_reason": "TEXT",
+            },
+            "h30533_daily_valuation": {
+                "trade_date": "TEXT", "index_code": "TEXT", "pe_ratio": "REAL",
+                "index_pe": "REAL", "earnings_yield": "REAL", "total_market_cap": "REAL",
+                "total_profit_ttm": "REAL", "stock_count": "INTEGER", "valid_count": "INTEGER",
+                "weight_coverage": "REAL", "negative_profit_count": "INTEGER",
+                "missing_count": "INTEGER", "source_type": "TEXT", "source_date": "TEXT",
+                "constituent_as_of": "TEXT", "constituent_basis": "TEXT",
+                "validity_reason": "TEXT", "updated_at": "REAL",
+            },
+            "h30533_security_valuation": {
+                "snapshot_date": "TEXT", "index_code": "TEXT", "security_code": "TEXT",
+                "name": "TEXT", "issuer_id": "TEXT", "weight": "REAL", "price": "REAL",
+                "currency": "TEXT", "market_cap": "REAL", "verified_shares": "REAL",
+                "profit_ttm": "REAL", "earnings_yield": "REAL", "index_pe": "REAL",
+                "pe": "REAL", "financial_as_of": "TEXT", "source_date": "TEXT",
+                "source_type": "TEXT", "source": "TEXT", "data_source": "TEXT",
+                "validity_reason": "TEXT",
+            },
+        }
+        for table, columns in migrations.items():
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info([{table}])")}
+            for column, definition in columns.items():
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE [{table}] ADD COLUMN [{column}] {definition}")
 
     @staticmethod
     def _h30533_value(row, column):
