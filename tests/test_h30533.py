@@ -489,6 +489,74 @@ class H30533SourceTests(unittest.TestCase):
             self.assertIn("unsupported currency", record["validity_reason"])
             self.assertNotIn("pe", record)
 
+    def test_current_pe_keeps_missing_currency_missing(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+             patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                 "EPS_TTM": 2.0,
+                 "REPORT_DATE": "2026-09-30",
+             }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertIsNone(record["currency"])
+        self.assertIn("missing currency", record["validity_reason"])
+        self.assertNotIn("pe", record)
+
+    def test_current_pe_rejects_hkd_without_verified_hkd_usd_rate(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+             patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                 "EPS_TTM": 2.0,
+                 "CURRENCY": "HKD",
+                 "REPORT_DATE": "2026-09-30",
+             }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertEqual(record["currency"], "HKD")
+        self.assertIn("HKD/USD conversion unavailable", record["validity_reason"])
+        self.assertNotIn("pe", record)
+
+    def test_current_pe_reports_non_positive_profit(self):
+        source = USDataSource()
+        for profit in (0, -1):
+            with self.subTest(profit=profit), \
+                 patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+                 patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                     "EPS_TTM": 2.0,
+                     "PROFIT_TTM": profit,
+                     "CURRENCY": "USD",
+                     "REPORT_DATE": "2026-09-30",
+                 }])):
+                record = source.get_current_pe("BABA")
+
+            self.assertIn("non_positive profit_ttm", record["validity_reason"])
+
+    def test_common_input_reports_invalid_numeric_values(self):
+        cases = (
+            ("price", 0), ("price", float("inf")),
+            ("shares_or_market_cap", 0), ("shares_or_market_cap", float("nan")),
+            ("profit_ttm", 0), ("profit_ttm", -1),
+        )
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                values = {
+                    "price": 80.0, "currency": "USD", "shares_or_market_cap": 1.0,
+                    "profit_ttm": 1.0, "financial_as_of": "2026-09-30", "source": "fixture",
+                }
+                values[field] = value
+                record = USDataSource.build_input_record("BABA", ads_ratio=8, **values)
+
+            self.assertIn(f"invalid {field}", record["validity_reason"])
+
+    def test_common_input_reports_none_and_non_finite_numeric_values(self):
+        for value in (None, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                record = USDataSource.build_input_record(
+                    "BABA", price=value, currency="USD", shares_or_market_cap=1,
+                    profit_ttm=1, financial_as_of="2026-09-30", source="fixture", ads_ratio=8,
+                )
+            self.assertIn("missing price" if value is None else "invalid price", record["validity_reason"])
+
     def test_daily_quotes_preserve_unavailable_outstanding_shares(self):
         source = USDataSource()
         with patch("data_sources.us.ak.stock_us_daily", return_value=pd.DataFrame([

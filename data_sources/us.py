@@ -36,14 +36,24 @@ class USDataSource:
     ) -> dict[str, Any]:
         """Build a common quote/financial record without sentinel zeros."""
         missing = []
-        if price is None:
-            missing.append("price")
+        invalid = []
+        for field, value, positive in (
+            ("price", price, True),
+            ("shares_or_market_cap", shares_or_market_cap, True),
+            ("profit_ttm", profit_ttm, True),
+        ):
+            if value is None:
+                missing.append(field)
+                continue
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                invalid.append(field)
+                continue
+            if not math.isfinite(numeric_value) or (positive and numeric_value <= 0):
+                invalid.append(field)
         if currency is None:
             missing.append("currency")
-        if shares_or_market_cap is None:
-            missing.append("shares_or_market_cap")
-        if profit_ttm is None:
-            missing.append("profit_ttm")
         if financial_as_of is None:
             missing.append("financial_as_of")
         if ads_ratio is not None and (not math.isfinite(ads_ratio) or ads_ratio <= 0):
@@ -61,8 +71,10 @@ class USDataSource:
             "ads_ratio": ads_ratio,
             "eps_ttm": None,
             "validity_reason": "; ".join(
-                f"missing {field}" if field != "invalid ads_ratio" else field
-                for field in missing
+                [*(f"missing {field}" for field in missing),
+                 *(f"invalid {field}" for field in invalid),
+                 *( ["invalid ads_ratio"] if ads_ratio is not None and
+                    (not math.isfinite(ads_ratio) or ads_ratio <= 0) else [])]
             ) or None,
         }
 
@@ -195,9 +207,7 @@ class USDataSource:
             float(self.ADS_RATIO[symbol]) if symbol in self.ADS_RATIO else None
         )
         price = None
-        currency = "HKD" if self._is_hk(stock_code) else (
-            "USD" if symbol in self.ADS_RATIO else None
-        )
+        currency = "HKD" if self._is_hk(stock_code) else None
         eps_ttm = None
         profit_ttm = None
         financial_as_of = None
@@ -259,7 +269,15 @@ class USDataSource:
             record[field] is None
             for field in ("price", "currency", "shares_or_market_cap", "ads_ratio")
         )
-        if pe_inputs_missing or eps_ttm is None or eps_ttm <= 0:
+        if profit_ttm is not None and profit_ttm <= 0:
+            record["validity_reason"] = "; ".join(filter(None, [
+                record["validity_reason"], "non_positive profit_ttm"
+            ]))
+        if currency == "HKD" and not self._is_hk(stock_code):
+            record["validity_reason"] = "; ".join(filter(None, [
+                record["validity_reason"], "HKD/USD conversion unavailable"
+            ]))
+        if pe_inputs_missing or eps_ttm is None or eps_ttm <= 0 or currency == "HKD":
             if eps_ttm is not None and eps_ttm <= 0:
                 record["validity_reason"] = "; ".join(
                     filter(None, [record["validity_reason"], "non_positive eps_ttm"])
