@@ -162,11 +162,39 @@ class CacheDB:
         return None if pd.isna(value) else value
 
     def _save_h30533_table(self, conn, table, frame):
-        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info([{table}])")}
+        preexisting = set(existing)
+        allowlisted = {
+            "h30533_constituent_snapshot": {
+                "snapshot_date", "index_code", "security_code", "name", "exchange", "weight",
+                "issuer_id", "security_type", "ads_ratio", "source_type", "as_of",
+                "constituent_as_of", "raw_metadata", "validity_reason",
+            },
+            "h30533_daily_valuation": {
+                "trade_date", "index_code", "pe_ratio", "index_pe", "earnings_yield",
+                "total_market_cap", "total_profit_ttm", "stock_count", "valid_count",
+                "weight_coverage", "negative_profit_count", "missing_count", "source_type",
+                "source_date", "constituent_as_of", "constituent_basis", "validity_reason",
+                "updated_at",
+            },
+            "h30533_security_valuation": {
+                "snapshot_date", "index_code", "security_code", "name", "issuer_id", "weight",
+                "price", "currency", "market_cap", "verified_shares", "profit_ttm",
+                "earnings_yield", "index_pe", "pe", "financial_as_of", "source_date",
+                "source_type", "source", "data_source", "validity_reason",
+            },
+        }[table]
         for column in frame.columns:
-            if column not in existing and column.isidentifier():
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN [{column}] TEXT")
-        columns = list(frame.columns)
+            if column not in existing and column.isidentifier() and column.startswith("extra_"):
+                conn.execute(f"ALTER TABLE [{table}] ADD COLUMN [{column}] TEXT")
+                existing.add(column)
+        # Core columns are explicit; known legacy columns and extra_* extensions remain writable.
+        legacy_columns = {
+            column for column in frame.columns
+            if column in preexisting or column.startswith("extra_")
+        }
+        columns = [column for column in frame.columns
+                   if (column in allowlisted or column in legacy_columns) and column.isidentifier()]
         names = ", ".join(f"[{column}]" for column in columns)
         placeholders = ",".join("?" for _ in columns)
         conn.executemany(
@@ -190,19 +218,19 @@ class CacheDB:
         daily = self._h30533_aliases(daily, {"pe_ratio": "index_pe", "stock_count": "valid_count"})
         securities = self._h30533_aliases(securities, {"pe": "index_pe", "data_source": "source"})
         frames = (constituents, daily, securities)
-        required = (("security_code", "weight", "source_type", "validity_reason"),
-                    ("trade_date", "source_type", "source_date", "validity_reason"),
-                    ("security_code", "weight", "source_type", "validity_reason"))
+        required = (("security_code", "weight", "source_type", "as_of"),
+                    ("trade_date", "source_type", "source_date", "constituent_as_of"),
+                    ("security_code", "weight", "source_type", "source_date"))
         for frame, fields in zip(frames, required):
-            if "index_code" in frame and frame["index_code"].dropna().astype(str).ne(index_code).any():
+            if ("index_code" not in frame or frame["index_code"].isna().any() or
+                    frame["index_code"].astype(str).ne(index_code).any()):
                 raise ValueError("H30533 index_code mismatch")
-            if any(field not in frame.columns for field in fields if field != "validity_reason"):
+            if any(field not in frame.columns for field in fields):
                 raise ValueError("H30533 required metadata missing")
-        dates = {str(constituents["as_of"].dropna().iloc[0]), str(daily["trade_date"].dropna().iloc[0]),
-                 str(daily["source_date"].dropna().iloc[0]), str(securities["source_date"].dropna().iloc[0])}
-        sources = {str(frame["source_type"].dropna().iloc[0]) for frame in frames}
-        if len(dates) != 1 or len(sources) != 1:
-            raise ValueError("H30533 snapshot metadata mismatch")
+        constituent_dates = set(constituents["as_of"].dropna().astype(str))
+        daily_constituent_dates = set(daily["constituent_as_of"].dropna().astype(str))
+        if len(constituent_dates) != 1 or daily_constituent_dates != constituent_dates:
+            raise ValueError("H30533 constituent_as_of mismatch")
         constituents = constituents.copy()
         daily = daily.copy()
         securities = securities.copy()
@@ -224,7 +252,7 @@ class CacheDB:
 
     def load_h30533_snapshot(self, index_code):
         with self._conn() as conn:
-            return {
+            result = {
                 key: pd.read_sql_query(
                     f"SELECT * FROM {table} WHERE index_code=? ORDER BY {order}", conn, params=[index_code])
                 for key, table, order in (
@@ -233,10 +261,36 @@ class CacheDB:
                     ("securities", "h30533_security_valuation", "snapshot_date, security_code"),
                 )
             }
+        if "raw_metadata" in result["constituents"]:
+            def decode_metadata(value):
+                if not isinstance(value, str):
+                    return value
+                try:
+                    return json.loads(value)
+                except (TypeError, ValueError):
+                    return value
+
+            result["constituents"]["raw_metadata"] = result["constituents"]["raw_metadata"].apply(
+                decode_metadata
+            )
+        return result
 
     def save_h30533_daily(self, index_code, df):
-        snapshot = self.load_h30533_snapshot(index_code)
-        self.save_h30533_snapshot(index_code, snapshot["constituents"], df, snapshot["securities"])
+        if df.empty:
+            return
+        daily = self._h30533_aliases(df, {"pe_ratio": "index_pe", "stock_count": "valid_count"})
+        required = {"trade_date", "source_type", "source_date", "constituent_as_of"}
+        if "index_code" not in daily:
+            daily = daily.copy()
+            daily["index_code"] = index_code
+        if daily["index_code"].astype(str).ne(index_code).any() or not required.issubset(daily.columns):
+            raise ValueError("H30533 daily metadata missing or mismatched")
+        daily = daily.copy()
+        if "validity_reason" not in daily:
+            daily["validity_reason"] = None
+        with self._conn() as conn:
+            conn.execute("DELETE FROM h30533_daily_valuation WHERE index_code=?", (index_code,))
+            self._save_h30533_table(conn, "h30533_daily_valuation", daily)
 
     def save_quotes(self, code: str, df: pd.DataFrame):
         """保存日K线数据"""
@@ -431,9 +485,14 @@ class CacheDB:
         """获取指数最近更新日期"""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT MAX(trade_date) FROM index_pe_daily WHERE index_code=?",
+                "SELECT MAX(trade_date) FROM h30533_daily_valuation WHERE index_code=?",
                 (index_code,)
             ).fetchone()
+            if index_code != "H30533" and not (row and row[0]):
+                row = conn.execute(
+                    "SELECT MAX(trade_date) FROM index_pe_daily WHERE index_code=?",
+                    (index_code,)
+                ).fetchone()
             return row[0] if row and row[0] else None
 
     def clear_index(self, index_code: str):
@@ -567,6 +626,10 @@ class CacheDB:
         """获取中概股最近更新日期"""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT MAX(trade_date) FROM us_pe_daily"
+                "SELECT MAX(trade_date) FROM h30533_daily_valuation WHERE index_code=?",
+                ("H30533",),
             ).fetchone()
+            if row and row[0]:
+                return row[0]
+            row = conn.execute("SELECT MAX(trade_date) FROM us_pe_daily").fetchone()
             return row[0] if row and row[0] else None

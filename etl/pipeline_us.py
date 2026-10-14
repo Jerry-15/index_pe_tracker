@@ -148,17 +148,13 @@ class USETL:
 
     def load_result(self) -> Dict:
         """加载结果（含完整历史序列 + 最新快照）"""
-        pe_df = self.cache.load_us_pe_daily()
-        try:
-            stats_df = self.cache.load_us_pe_stats()
-            if not stats_df.empty:
-                stats_cols = [c for c in stats_df.columns if c in ("trade_date", "pe_mean", "pe_std",
-                                    "pe_high_line", "pe_low_line", "pe_percentile")]
-                pe_df = pe_df.merge(stats_df[stats_cols], on="trade_date", how="left")
-        except Exception:
-            pass
-        stock_pe = self.cache.load_us_stock_pe()
-        constituents = self.source.get_constituents(self.index_code)
+        snapshot = self.cache.load_h30533_snapshot(self.index_code)
+        pe_df = snapshot["daily"]
+        stock_pe = snapshot["securities"]
+        if "code" not in stock_pe and "security_code" in stock_pe:
+            stock_pe = stock_pe.copy()
+            stock_pe["code"] = stock_pe["security_code"]
+        constituents = snapshot["constituents"]
         return {
             "pe_data": pe_df,
             "stock_pe": stock_pe,
