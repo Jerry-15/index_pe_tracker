@@ -119,7 +119,7 @@ class USETL:
         self.cache.save_us_pe_stats(pe_df[stats_cols])
 
     def run_historical(self, progress_cb=None) -> pd.DataFrame:
-        """构建历史 PE 序列（港股 + 美股混合，使用各股最新 EPS_TTM）"""
+        """构建历史 PE 序列（港股+美股混合，各日期取最近已发布的EPS_TTM）"""
         constituents = self.source.get_constituents(self.index_code)
         stocks = constituents.to_dict("records")
 
@@ -138,25 +138,41 @@ class USETL:
         if not all_quotes:
             return pd.DataFrame()
 
-        # 获取每只股票的最新 EPS_TTM
-        eps_map = {}
+        # 获取每只股票的历史 EPS 快照序列 [(report_date, eps)]
+        # 港股用 EPS_TTM，美股用 BASIC_EPS（年报值）
+        eps_series = {}
         for stock in stocks:
             code = stock["code"]
             fin = self.source.get_financials(code)
             if fin.empty:
                 continue
-            eps = None
+            # 找EPS列
+            eps_col = None
             for col in ["EPS_TTM", "BASIC_EPS"]:
                 if col in fin.columns:
-                    eps = fin[col].iloc[0]
+                    eps_col = col
                     break
-            if eps and not pd.isna(eps) and eps > 0:
-                eps_usd = float(eps)
-                if self.source._is_us(code):
-                    rate = self.source._get_fx_rate()
-                    ads_ratio = self.source.ADS_RATIO.get(code, 1)
-                    eps_usd = eps_usd * ads_ratio / rate
-                eps_map[code] = eps_usd
+            if eps_col is None:
+                continue
+            # 找报告日期列
+            rd_col = "REPORT_DATE" if "REPORT_DATE" in fin.columns else fin.columns[0]
+            events = []
+            for _, row in fin.iterrows():
+                rd = row[rd_col]
+                if pd.isna(rd):
+                    continue
+                try:
+                    rd_ts = pd.Timestamp(rd)
+                except Exception:
+                    continue
+                eps_val = row[eps_col]
+                if pd.isna(eps_val) or eps_val <= 0:
+                    continue
+                events.append((rd_ts, float(eps_val)))
+            if not events:
+                continue
+            events.sort(key=lambda x: x[0])
+            eps_series[code] = events
 
         if progress_cb:
             progress_cb(f"共同交易日计算 PE...")
@@ -169,6 +185,10 @@ class USETL:
 
         results = []
         for date in common_dates[-500:]:
+            try:
+                td = pd.Timestamp(date)
+            except Exception:
+                continue
             prices = {}
             for code, q in all_quotes.items():
                 day_df = q[q["date"] == date]
@@ -182,17 +202,35 @@ class USETL:
             mv_sum = 0.0
             count = 0
             for code, price in prices.items():
-                eps_usd = eps_map.get(code)
-                if eps_usd is None or eps_usd <= 0:
+                events = eps_series.get(code)
+                if not events:
                     continue
-                pe = price / eps_usd
-                if pe > 0 and pe < 500:
+                # 找到在 td 之前最近一次财报的 EPS
+                best_eps = None
+                for rd, eps_val in events:
+                    if rd <= td:
+                        best_eps = eps_val
+                    else:
+                        break
+                if best_eps is None:
+                    continue
+                # 美股需汇率+ADS校正
+                eps_usd = best_eps
+                if self.source._is_us(code):
+                    rate = self.source._get_fx_rate()
+                    ads_ratio = self.source.ADS_RATIO.get(code, 1)
+                    eps_usd = best_eps * ads_ratio / rate
+                pe = price / eps_usd if eps_usd > 0 else None
+                if pe and 0 < pe < 500:
                     mv_proxy = (price ** 2) / pe
                     pe_sum += mv_proxy * pe
                     mv_sum += mv_proxy
                     count += 1
 
             if count > 0 and mv_sum > 0:
+                # 最低成分股数量阈值：低于25只的日期说明行情数据缺失（如港股数据源断档），跳过避免毛刺
+                if count < 25:
+                    continue
                 index_pe = pe_sum / mv_sum
                 results.append({
                     "trade_date": date,
