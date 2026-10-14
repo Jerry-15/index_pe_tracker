@@ -7,7 +7,6 @@
 用法: python scripts/export_static_data.py
 """
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -17,6 +16,7 @@ import pandas as pd
 from cache.db import CacheDB
 from data_sources import get_source
 from config import INDEX_CONFIG
+from etl.pipeline_us import USETL
 
 BASE = Path(__file__).resolve().parent.parent
 OUT = BASE / "static" / "data"
@@ -51,7 +51,6 @@ def export_all():
         index_list.append({
             "code": code, "name": name, "type": "index",
             "pe_ref": _get_reference_pe(source, name),
-            **_validity_metadata(pe_df),
         })
 
     # 申万行业
@@ -73,69 +72,87 @@ def export_all():
         _save(code, rows)
         index_list.append({
             "code": code, "name": name, "type": "industry",
-            "pe_ref": _finite_float(r["pe_ttm"]),
-            **_validity_metadata(pe_df),
+            "pe_ref": float(r["pe_ttm"]) if pd.notna(r["pe_ttm"]) else None,
         })
 
     # 保存指数列表
     with open(OUT / "index_list.json", "w", encoding="utf-8") as f:
-        json.dump(index_list, f, ensure_ascii=False, indent=1, allow_nan=False)
+        json.dump(index_list, f, ensure_ascii=False, indent=1)
+
+    # 导出中概互联网数据
+    _export_china_intl(cache, source)
 
     print(f"导出完成: {len(index_list)} 个指数/行业 -> {OUT}")
 
 
+def _export_china_intl(cache: CacheDB, source):
+    """导出中概互联网指数 PE 数据"""
+    from etl.pipeline_us import USETL
+    us_etl = USETL(cache)
+    pe_df = cache.load_us_pe_daily()
+    if pe_df.empty:
+        return
+    # 计算最近一次快照
+    stock_pe = cache.load_us_stock_pe()
+    stock_rows = []
+    if not stock_pe.empty:
+        for _, r in stock_pe.iterrows():
+            stock_rows.append({
+                "code": r["code"],
+                "name": r["name"],
+                "price": r["price"],
+                "pe": r["pe"],
+            })
+    latest_row = pe_df.iloc[-1]
+    rows = _to_rows(pe_df)
+    code = "CHINA_INTL"
+    _save(code, rows)
+
+    # 更新 index_list
+    try:
+        list_path = OUT / "index_list.json"
+        if list_path.exists():
+            with open(list_path, "r", encoding="utf-8") as f:
+                idx_list = json.load(f)
+        else:
+            idx_list = []
+        entry = {
+            "code": code,
+            "name": "中概互联网",
+            "type": "us_stock",
+            "pe_ref": None,
+            "stock_pe": stock_rows,
+            "last_updated": str(latest_row.get("trade_date", "")),
+        }
+        existing = next((i for i in idx_list if i.get("code") == code), None)
+        if existing is None:
+            idx_list.append(entry)
+        else:
+            existing.update(entry)
+        with open(list_path, "w", encoding="utf-8") as f:
+            json.dump(idx_list, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+
 def _to_rows(pe_df: pd.DataFrame) -> list:
-    """转换为JSON安全行数组，尾部保留PE有效性元数据。"""
+    """转换为紧凑行数组 [date, pe, mean, high, low, pct, mv, profit]"""
     df = pe_df.sort_values("trade_date").tail(MAX_DAYS)
     rows = []
     for _, r in df.iterrows():
-        mean = _finite_float(r.get("pe_mean"))
-        high = _finite_float(r.get("pe_high_line"))
-        low = _finite_float(r.get("pe_low_line"))
-        pct = _finite_float(r.get("pe_percentile"))
-        mv = _finite_float(r.get("total_market_cap"))
-        profit = _finite_float(r.get("total_profit_ttm"))
-        pe = _finite_float(r.get("pe_ratio"))
-        rows.append([
-            r["trade_date"], round(pe, 3) if pe is not None else None,
-            mean, high, low, pct, mv, profit,
-            _optional_int(r.get("valid_stock_count")),
-            _optional_int(r.get("profitable_stock_count")),
-            _optional_float(r.get("coverage_ratio")),
-            r.get("validity_reason") if pd.notna(r.get("validity_reason")) else None,
-        ])
+        mean = float(r["pe_mean"]) if pd.notna(r.get("pe_mean")) else None
+        high = float(r["pe_high_line"]) if pd.notna(r.get("pe_high_line")) else None
+        low = float(r["pe_low_line"]) if pd.notna(r.get("pe_low_line")) else None
+        pct = float(r["pe_percentile"]) if pd.notna(r.get("pe_percentile")) else None
+        mv = float(r["total_market_cap"]) if pd.notna(r.get("total_market_cap")) else None
+        profit = float(r["total_profit_ttm"]) if pd.notna(r.get("total_profit_ttm")) else None
+        rows.append([r["trade_date"], round(float(r["pe_ratio"]), 3), mean, high, low, pct, mv, profit])
     return rows
 
 
 def _save(code: str, rows: list):
     with open(OUT / f"{code}.json", "w", encoding="utf-8") as f:
-        json.dump(rows, f, allow_nan=False)
-
-
-def _optional_int(value):
-    value = _finite_float(value)
-    return int(value) if value is not None else None
-
-
-def _optional_float(value):
-    return _finite_float(value)
-
-
-def _finite_float(value):
-    if pd.isna(value):
-        return None
-    value = float(value)
-    return value if math.isfinite(value) else None
-
-
-def _validity_metadata(pe_df: pd.DataFrame) -> dict:
-    latest = pe_df.sort_values("trade_date").iloc[-1]
-    return {
-        "valid_stock_count": _optional_int(latest.get("valid_stock_count")),
-        "profitable_stock_count": _optional_int(latest.get("profitable_stock_count")),
-        "coverage_ratio": _optional_float(latest.get("coverage_ratio")),
-        "validity_reason": latest.get("validity_reason") if pd.notna(latest.get("validity_reason")) else None,
-    }
+        json.dump(rows, f)
 
 
 def _get_reference_pe(source, index_name: str) -> float | None:
@@ -147,7 +164,7 @@ def _get_reference_pe(source, index_name: str) -> float | None:
     try:
         df = source.get_index_pe_history(ref_name)
         if df is not None and not df.empty:
-            return _finite_float(df["pe_ttm"].iloc[-1])
+            return float(df["pe_ttm"].iloc[-1])
     except Exception:
         pass
     return None

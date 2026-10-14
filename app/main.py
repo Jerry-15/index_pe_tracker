@@ -11,9 +11,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import INDEX_CONFIG, INDEX_REFERENCE, CHART_COLORS
+from config import INDEX_CONFIG, INDEX_REFERENCE, CHART_COLORS, CHINA_INTL_CONFIG
 from cache.db import CacheDB
 from etl.pipeline import PEETL
+from etl.pipeline_us import USETL
 
 
 st.set_page_config(
@@ -182,26 +183,134 @@ def run_update(index_code, index_name, progress_container):
         st.error(f"更新失败: {e}")
 
 
-def main():
-    st.title("📊 板块指数估值追踪器")
-    st.caption("自下而上计算指数 PE(TTM) · 基于新浪财经数据")
+def run_us_update(us_etl, progress_container):
+    """执行中概互联网数据更新"""
+    progress_bar = progress_container.progress(0)
+    status_text = progress_container.text("开始更新中概互联网...")
+
+    def progress_cb(msg):
+        status_text.text(msg)
+        try:
+            num = int(msg.split("[")[1].split("]")[0])
+            total = int(msg.split("/")[1].split("]")[0])
+            progress_bar.progress(min(num / total, 1.0))
+        except (IndexError, ValueError):
+            pass
+
+    try:
+        us_etl.run_historical(progress_cb=progress_cb)
+        progress_bar.progress(1.0)
+        status_text.text("✅ 中概互联网更新完成！")
+        time.sleep(0.5)
+        st.rerun()
+    except Exception as e:
+        progress_bar.progress(1.0)
+        status_text.text(f"❌ 更新失败: {e}")
+        st.error(f"更新失败: {e}")
+
+
+def _render_china_intl(us_etl):
+    """渲染中概互联网估值页面"""
+    st.markdown("### 🌏 中概互联网指数 PE(TTM)")
+    st.caption("美股上市中国互联网公司 · 基于 EPS_TTM 计算 · 汇率：USD/CNY")
+
+    result = us_etl.load_result()
+    pe_df = result["pe_data"]
+    stock_pe = result["stock_pe"]
+
+    if pe_df is not None and not pe_df.empty:
+        latest = pe_df.iloc[-1]
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("当前 PE(TTM)", f"{latest['pe_ratio']:.2f}" if pd.notna(latest.get('pe_ratio')) else "--")
+        if "pe_mean" in pe_df.columns and pd.notna(latest.get("pe_mean")):
+            col2.metric("滚动均值", f"{latest['pe_mean']:.2f}")
+        if "pe_high_line" in pe_df.columns and pd.notna(latest.get("pe_high_line")):
+            col3.metric("高估线", f"{latest['pe_high_line']:.2f}")
+        if "pe_low_line" in pe_df.columns and pd.notna(latest.get("pe_low_line")):
+            col4.metric("低估线", f"{latest['pe_low_line']:.2f}")
+
+        st.divider()
+
+        tab1, tab2, tab3 = st.tabs(["PE 走势", "成分股 PE 快照", "说明"])
+
+        with tab1:
+            if not pe_df.empty and "pe_ratio" in pe_df.columns:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=pe_df["trade_date"], y=pe_df["pe_ratio"],
+                    name="指数PE(TTM)", line=dict(color=CHART_COLORS["pe"], width=2),
+                ))
+                if "pe_mean" in pe_df.columns and pe_df["pe_mean"].notna().any():
+                    fig.add_trace(go.Scatter(
+                        x=pe_df["trade_date"], y=pe_df["pe_mean"],
+                        name="滚动均值", line=dict(color=CHART_COLORS["mean"], width=1.5, dash="dash"),
+                    ))
+                    fig.add_trace(go.Scatter(
+                        x=pe_df["trade_date"], y=pe_df["pe_high_line"],
+                        name="高估线(均值+1σ)", line=dict(color=CHART_COLORS["high_line"], width=1.5, dash="dot"),
+                    ))
+                    fig.add_trace(go.Scatter(
+                        x=pe_df["trade_date"], y=pe_df["pe_low_line"],
+                        name="低估线(均值-1σ)", line=dict(color=CHART_COLORS["low_line"], width=1.5, dash="dot"),
+                    ))
+                fig.update_layout(
+                    title=f"<b>中概互联网</b> — PE(TTM) 近8年走势",
+                    xaxis_title="日期", yaxis_title="市盈率 (PE)",
+                    height=450, hovermode="x unified",
+                    template="plotly_white",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        with tab2:
+            if stock_pe is not None and not stock_pe.empty:
+                show_cols = ["code", "name", "price", "pe", "pb"]
+                avail = [c for c in show_cols if c in stock_pe.columns]
+                pe_show = stock_pe[avail].copy()
+                pe_show.columns = ["代码", "名称", "最新价(USD)", "PE(TTM)", "PB"]
+                pe_show = pe_show.sort_values("PE(TTM)")
+                st.dataframe(pe_show, use_container_width=True, height=500)
+            else:
+                st.info("暂无个股 PE 数据，请更新")
+
+        with tab3:
+            st.markdown("""
+            - **指数成分**：23 家美股上市的中国互联网公司（阿里巴巴、拼多多、京东、百度、网易等）
+            - **计算口径**：`PE = 股价(USD) / (EPS_TTM(CNY) / USD_CNY汇率)`
+            - **数据源**：akshare `stock_us_daily`（新浪）+ `stock_financial_us_analysis_indicator_em`（东方财富）
+            - **汇率**：中国银行中间价，每日自动获取（默认 7.1771）
+            - ⚠️ **注意**：此为简单加权平均 PE，非市值加权，仅供参考；部分公司 EPS_TTM 为年/半年数据，非严格 TTM
+            - 💡 **使用方法**：在左侧选择「中概互联网」后点击「更新数据」
+            """)
+    else:
+        st.info("暂无中概互联网数据，请点击左侧「更新数据」开始拉取。")
+        st.markdown("""
+        **首次运行说明：**
+        1. 系统将从新浪财经获取各成分股的历史日K线和财务指标
+        2. 预计需要 **2-3 分钟**（23 只股票，逐只请求）
+        3. 数据将缓存在本地 SQLite 数据库中
+        4. 计算逻辑：`PE = 股价(USD) / (EPS_TTM(CNY) / 汇率)`
+        5. ⚠️ 汇率采用中国银行中间价，每日更新
+        """)
 
     etl = get_etl()
+    us_etl = USETL()
 
     # Sidebar: 指数选择 & 操作
     with st.sidebar:
         st.header("⚙️ 设置")
-        index_type = st.radio("指数类型", ["宽基指数", "申万行业"])
+        index_type = st.radio("指数类型", ["宽基指数", "申万行业", "中概互联网"])
 
         # 记录行业官方参考PE（当前快照）
         industry_pe_ref = None
+        index_code = None
+        index_name = None
 
         if index_type == "宽基指数":
             index_options = list(INDEX_CONFIG.keys())
             selected_index = st.selectbox("选择板块/指数", index_options)
             index_code = INDEX_CONFIG[selected_index]["code"]
             index_name = INDEX_CONFIG[selected_index]["name"]
-        else:
+        elif index_type == "申万行业":
             # 动态加载申万一级行业
             industry_ref = etl.source.get_industry_reference()
             if industry_ref.empty:
@@ -222,10 +331,17 @@ def main():
                     index_code, index_name = "801010", "农林牧渔"
             else:
                 index_code, index_name = "801010", "农林牧渔"
+        else:
+            index_code = CHINA_INTL_CONFIG["code"]
+            index_name = CHINA_INTL_CONFIG["name"]
 
         st.divider()
 
-        last_updated = etl.cache.get_last_updated(index_code)
+        if index_type == "中概互联网":
+            last_updated = us_etl.cache.get_us_last_updated()
+        else:
+            last_updated = etl.cache.get_last_updated(index_code)
+
         if last_updated:
             st.success(f"上次更新: {last_updated}")
         else:
@@ -234,15 +350,22 @@ def main():
         if st.button("🔄 更新数据", use_container_width=True, type="primary"):
             with st.sidebar:
                 progress_container = st.container()
-            run_update(index_code, index_name, progress_container)
+            if index_type == "中概互联网":
+                run_us_update(us_etl, progress_container)
+            else:
+                run_update(index_code, index_name, progress_container)
 
         st.divider()
-        if st.button("🗑️ 清除缓存", use_container_width=True):
+        if index_type != "中概互联网" and st.button("🗑️ 清除缓存", use_container_width=True):
             etl.cache.clear_index(index_code)
             st.success("缓存已清除，请重新更新")
             st.rerun()
 
     # Main content
+    if index_type == "中概互联网":
+        _render_china_intl(us_etl)
+        return
+
     result = etl.load_result(index_code)
     pe_df = result["pe_data"]
 
@@ -271,20 +394,14 @@ def main():
 
         # 数据覆盖率说明
         total_constituents = len(get_constituents(index_code))
-        quote_coverage = latest.get("valid_stock_count", latest.get("stock_count", 0))
-        profitable_coverage = latest.get("profitable_stock_count", 0)
-        coverage_ratio = latest.get("coverage_ratio")
-        if pd.notna(coverage_ratio):
-            coverage_text = f"盈利TTM覆盖：{profitable_coverage}/{total_constituents} 只（{coverage_ratio:.1%}）"
-        else:
-            coverage_text = f"盈利TTM覆盖：{profitable_coverage}/{total_constituents} 只"
+        coverage = latest.get("stock_count", 0)
         ref_text = ""
         if reference_df is not None and not reference_df.empty:
             ref_text = (f" | 参考PE对比：自下而上 {latest['pe_ratio']:.2f}"
                         f" vs 月度参考 {reference_df['pe_ttm'].iloc[-1]:.2f}")
         elif industry_pe_ref is not None:
             ref_text = f" | 申万官方参考PE: {industry_pe_ref:.2f}"
-        st.caption(f"📊 行情覆盖：{quote_coverage}/{total_constituents} 只 | {coverage_text} | "
+        st.caption(f"📊 数据覆盖：{coverage}/{total_constituents} 只成分股 | "
                    f"更新至 {latest['trade_date']}{ref_text}")
 
         st.divider()
@@ -359,22 +476,17 @@ def main():
 
         # 数据表格
         with st.expander("📋 查看原始数据"):
-            cols = ["trade_date", "pe_ratio", "total_market_cap", "total_profit_ttm",
-                    "valid_stock_count", "profitable_stock_count", "coverage_ratio",
-                    "validity_reason"]
+            cols = ["trade_date", "pe_ratio", "total_market_cap", "total_profit_ttm", "stock_count"]
             if "pe_percentile" in pe_df.columns:
                 cols.append("pe_percentile")
             show_df = pe_df[cols].copy()
             rename_map = {"trade_date": "日期", "pe_ratio": "PE(TTM)",
                           "total_market_cap": "总市值(元)", "total_profit_ttm": "总利润TTM(元)",
-                           "valid_stock_count": "行情覆盖数", "profitable_stock_count": "盈利TTM覆盖数",
-                           "coverage_ratio": "盈利TTM覆盖率", "validity_reason": "有效性原因",
-                           "pe_percentile": "PE百分位"}
+                          "stock_count": "成分股数", "pe_percentile": "PE百分位"}
             show_df = show_df.rename(columns=rename_map)
             show_df["总市值(亿)"] = (show_df["总市值(元)"] / 1e8).round(2)
             show_df["总利润TTM(亿)"] = (show_df["总利润TTM(元)"] / 1e8).round(2)
-            out_cols = ["日期", "PE(TTM)", "总市值(亿)", "总利润TTM(亿)",
-                        "行情覆盖数", "盈利TTM覆盖数", "盈利TTM覆盖率", "有效性原因"]
+            out_cols = ["日期", "PE(TTM)", "总市值(亿)", "总利润TTM(亿)", "成分股数"]
             if "PE百分位" in show_df.columns:
                 show_df["PE百分位"] = show_df["PE百分位"].round(1)
                 out_cols.append("PE百分位")

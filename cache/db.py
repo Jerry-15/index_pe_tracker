@@ -68,10 +68,6 @@ class CacheDB:
                     total_profit_ttm REAL,
                     pe_ratio REAL,
                     stock_count INTEGER,
-                    valid_stock_count INTEGER,
-                    profitable_stock_count INTEGER,
-                    coverage_ratio REAL,
-                    validity_reason TEXT,
                     updated_at REAL,
                     PRIMARY KEY (trade_date, index_code)
                 );
@@ -98,90 +94,41 @@ class CacheDB:
                     created_at REAL
                 );
 
-                CREATE TABLE IF NOT EXISTS update_checkpoint (
-                    run_id TEXT NOT NULL,
-                    stage TEXT NOT NULL,
-                    item_key TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    error_msg TEXT,
-                    updated_at REAL NOT NULL,
-                    PRIMARY KEY (run_id, stage, item_key)
+                CREATE TABLE IF NOT EXISTS us_pe_daily (
+                    trade_date TEXT NOT NULL,
+                    pe_ratio REAL,
+                    total_market_cap REAL,
+                    stock_count INTEGER,
+                    updated_at REAL,
+                    PRIMARY KEY (trade_date)
                 );
 
-                DROP INDEX IF EXISTS idx_quotes_code_date;
-                CREATE INDEX IF NOT EXISTS idx_financials_code_publish
-                    ON stock_financials(code, publish_date);
-                CREATE INDEX IF NOT EXISTS idx_quarterly_code_publish
-                    ON stock_quarterly_profit(code, publish_date);
-                CREATE INDEX IF NOT EXISTS idx_pe_daily_index_date
-                    ON index_pe_daily(index_code, trade_date);
-                CREATE INDEX IF NOT EXISTS idx_pe_stats_index_date
-                    ON index_pe_stats(index_code, trade_date);
+                CREATE TABLE IF NOT EXISTS us_pe_stats (
+                    trade_date TEXT NOT NULL,
+                    pe_mean REAL,
+                    pe_std REAL,
+                    pe_high_line REAL,
+                    pe_low_line REAL,
+                    pe_percentile REAL,
+                    updated_at REAL,
+                    PRIMARY KEY (trade_date)
+                );
+
+                CREATE TABLE IF NOT EXISTS us_stock_pe (
+                    snapshot_date TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    name TEXT,
+                    price REAL,
+                    eps_ttm_cny REAL,
+                    eps_ttm_usd REAL,
+                    pe REAL,
+                    updated_at REAL,
+                    PRIMARY KEY (snapshot_date, code)
+                );
             """)
-            existing = {row[1] for row in conn.execute("PRAGMA table_info(index_pe_daily)")}
-            for name, definition in (
-                ("valid_stock_count", "INTEGER"),
-                ("profitable_stock_count", "INTEGER"),
-                ("coverage_ratio", "REAL"),
-                ("validity_reason", "TEXT"),
-            ):
-                if name not in existing:
-                    conn.execute(f"ALTER TABLE index_pe_daily ADD COLUMN {name} {definition}")
-
-    def save_checkpoint(
-        self,
-        run_id: str,
-        stage: str,
-        item_key: str,
-        status: str,
-        error_msg: Optional[str] = None,
-    ):
-        """Persist the latest result for one item in an update run."""
-        with self._conn() as conn:
-            conn.execute(
-                """
-                INSERT INTO update_checkpoint
-                    (run_id, stage, item_key, status, error_msg, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(run_id, stage, item_key) DO UPDATE SET
-                    status=excluded.status,
-                    error_msg=excluded.error_msg,
-                    updated_at=excluded.updated_at
-                """,
-                (run_id, stage, item_key, status, error_msg, time.time()),
-            )
-
-    def load_checkpoint(self, run_id: str, stage: str) -> dict:
-        """Load checkpoint records keyed by item key for a run stage."""
-        with self._conn() as conn:
-            rows = conn.execute(
-                """
-                SELECT item_key, status, error_msg, updated_at
-                FROM update_checkpoint
-                WHERE run_id=? AND stage=?
-                ORDER BY item_key
-                """,
-                (run_id, stage),
-            ).fetchall()
-        return {
-            item_key: {
-                "status": status,
-                "error_msg": error_msg,
-                "updated_at": updated_at,
-            }
-            for item_key, status, error_msg, updated_at in rows
-        }
-
-    def clear_checkpoint(self, run_id: str):
-        """Remove checkpoints belonging only to the specified update run."""
-        with self._conn() as conn:
-            conn.execute("DELETE FROM update_checkpoint WHERE run_id=?", (run_id,))
 
     def save_quotes(self, code: str, df: pd.DataFrame):
         """保存日K线数据"""
-        if df.empty:
-            return
-        df = self._normalize_quote_dates(df)
         if df.empty:
             return
         with self._conn() as conn:
@@ -217,9 +164,6 @@ class CacheDB:
         """增量合并日K线（只插入新日期，不删除已有）"""
         if df.empty:
             return
-        df = self._normalize_quote_dates(df)
-        if df.empty:
-            return
         with self._conn() as conn:
             records = []
             for _, row in df.iterrows():
@@ -233,13 +177,6 @@ class CacheDB:
                 "INSERT OR IGNORE INTO stock_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 records
             )
-
-    @staticmethod
-    def _normalize_quote_dates(df: pd.DataFrame) -> pd.DataFrame:
-        normalized = df.copy()
-        normalized["date"] = pd.to_datetime(normalized["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-        normalized = normalized.dropna(subset=["date"])
-        return normalized.drop_duplicates(subset=["date"], keep="last")
 
     def save_financials(self, code: str, df: pd.DataFrame):
         """保存财务数据（含期间类型）"""
@@ -337,17 +274,10 @@ class CacheDB:
                     row["trade_date"], index_code,
                     row.get("total_market_cap"), row.get("total_profit_ttm"),
                     row.get("pe_ratio"), row.get("stock_count"),
-                    row.get("valid_stock_count", row.get("stock_count")),
-                    row.get("profitable_stock_count"), row.get("coverage_ratio"),
-                    row.get("validity_reason"),
                     time.time()
                 ))
             conn.executemany(
-                """INSERT OR REPLACE INTO index_pe_daily
-                   (trade_date, index_code, total_market_cap, total_profit_ttm,
-                    pe_ratio, stock_count, valid_stock_count, profitable_stock_count,
-                    coverage_ratio, validity_reason, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                "INSERT OR REPLACE INTO index_pe_daily VALUES (?,?,?,?,?,?,?)",
                 records
             )
 
@@ -402,3 +332,141 @@ class CacheDB:
             conn.execute("DELETE FROM index_pe_daily WHERE index_code=?", (index_code,))
             conn.execute("DELETE FROM index_pe_stats WHERE index_code=?", (index_code,))
             conn.execute("DELETE FROM index_constituents WHERE index_code=?", (index_code,))
+
+    def save_us_pe_daily(self, pe_df: pd.DataFrame):
+        """保存中概互联网每日 PE 序列"""
+        if pe_df.empty:
+            return
+        with self._conn() as conn:
+            conn.execute("DELETE FROM us_pe_daily")
+            records = []
+            for _, row in pe_df.iterrows():
+                records.append((
+                    row["trade_date"],
+                    row.get("pe_ratio"),
+                    row.get("total_market_cap"),
+                    row.get("stock_count"),
+                    time.time(),
+                ))
+            conn.executemany(
+                """INSERT INTO us_pe_daily
+                   (trade_date, pe_ratio, total_market_cap, stock_count, updated_at)
+                   VALUES (?,?,?,?,?)""",
+                records,
+            )
+
+    def load_us_pe_daily(self) -> pd.DataFrame:
+        """加载中概互联网每日 PE 序列"""
+        with self._conn() as conn:
+            return pd.read_sql_query(
+                "SELECT * FROM us_pe_daily ORDER BY trade_date", conn
+            )
+
+    def save_us_pe_snapshot(self, date: str, df: pd.DataFrame):
+        """保存中概互联网当日指数 PE 快照"""
+        if df.empty:
+            return
+        with self._conn() as conn:
+            conn.execute("DELETE FROM us_pe_daily WHERE trade_date=?", (date,))
+            records = []
+            for _, row in df.iterrows():
+                records.append((
+                    row["trade_date"],
+                    row.get("pe_ratio"),
+                    row.get("total_market_cap"),
+                    row.get("stock_count"),
+                    time.time(),
+                ))
+            conn.executemany(
+                """INSERT INTO us_pe_daily
+                   (trade_date, pe_ratio, total_market_cap, stock_count, updated_at)
+                   VALUES (?,?,?,?,?)""",
+                records,
+            )
+
+    def load_us_pe_snapshot(self) -> pd.DataFrame:
+        """加载最近一次中概互联网指数 PE 快照"""
+        with self._conn() as conn:
+            return pd.read_sql_query(
+                "SELECT * FROM us_pe_daily ORDER BY trade_date DESC LIMIT 1", conn
+            )
+
+    def save_us_pe_stats(self, stats_df: pd.DataFrame):
+        """保存中概互联网统计指标"""
+        if stats_df.empty:
+            return
+        with self._conn() as conn:
+            conn.execute("DELETE FROM us_pe_stats")
+            records = []
+            for _, row in stats_df.iterrows():
+                records.append((
+                    row["trade_date"],
+                    row.get("pe_mean"),
+                    row.get("pe_std"),
+                    row.get("pe_high_line"),
+                    row.get("pe_low_line"),
+                    row.get("pe_percentile"),
+                    time.time(),
+                ))
+            conn.executemany(
+                """INSERT INTO us_pe_stats
+                   (trade_date, pe_mean, pe_std, pe_high_line,
+                    pe_low_line, pe_percentile, updated_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                records,
+            )
+
+    def load_us_pe_stats(self) -> pd.DataFrame:
+        """加载中概互联网统计指标"""
+        with self._conn() as conn:
+            return pd.read_sql_query(
+                "SELECT * FROM us_pe_stats ORDER BY trade_date", conn
+            )
+
+    def save_us_stock_pe(self, date: str, df: pd.DataFrame):
+        """保存中概股单只股票 PE 快照"""
+        if df.empty:
+            return
+        with self._conn() as conn:
+            conn.execute("DELETE FROM us_stock_pe WHERE snapshot_date=?", (date,))
+            records = []
+            for _, row in df.iterrows():
+                records.append((
+                    date,
+                    row["code"],
+                    row.get("name", ""),
+                    row.get("price"),
+                    row.get("eps_ttm_cny"),
+                    row.get("eps_ttm_usd"),
+                    row.get("pe"),
+                    time.time(),
+                ))
+            conn.executemany(
+                """INSERT INTO us_stock_pe
+                   (snapshot_date, code, name, price, eps_ttm_cny,
+                    eps_ttm_usd, pe, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                records,
+            )
+
+    def load_us_stock_pe(self) -> pd.DataFrame:
+        """加载最新一期的中概股 PE 快照"""
+        with self._conn() as conn:
+            latest = conn.execute(
+                "SELECT MAX(snapshot_date) FROM us_stock_pe"
+            ).fetchone()
+            if not latest or not latest[0]:
+                return pd.DataFrame()
+            df = pd.read_sql_query(
+                "SELECT * FROM us_stock_pe WHERE snapshot_date=?",
+                conn, params=[latest[0]]
+            )
+            return df
+
+    def get_us_last_updated(self) -> Optional[str]:
+        """获取中概股最近更新日期"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT MAX(trade_date) FROM us_pe_daily"
+            ).fetchone()
+            return row[0] if row and row[0] else None

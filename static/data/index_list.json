@@ -3,13 +3,13 @@
   "code": "000300",
   "name": "沪深300",
   "type": "index",
-  "pe_ref": 13.04
+  "pe_ref": 12.49
  },
  {
   "code": "000905",
   "name": "中证500",
   "type": "index",
-  "pe_ref": 27.63
+  "pe_ref": 24.8
  },
  {
   "code": "399001",
@@ -21,186 +21,399 @@
   "code": "801010",
   "name": "农林牧渔",
   "type": "industry",
-  "pe_ref": 33.7
+  "pe_ref": 32.42
  },
  {
   "code": "801030",
   "name": "基础化工",
   "type": "industry",
-  "pe_ref": 23.41
+  "pe_ref": 21.15
  },
  {
   "code": "801040",
   "name": "钢铁",
   "type": "industry",
-  "pe_ref": 20.76
+  "pe_ref": 19.98
  },
  {
   "code": "801050",
   "name": "有色金属",
   "type": "industry",
-  "pe_ref": 18.35
+  "pe_ref": 15.77
  },
  {
   "code": "801080",
   "name": "电子",
   "type": "industry",
-  "pe_ref": 54.0
+  "pe_ref": 45.14
  },
  {
   "code": "801880",
   "name": "汽车",
   "type": "industry",
-  "pe_ref": 23.16
+  "pe_ref": 21.63
  },
  {
   "code": "801110",
   "name": "家用电器",
   "type": "industry",
-  "pe_ref": 15.53
+  "pe_ref": 14.93
  },
  {
   "code": "801120",
   "name": "食品饮料",
   "type": "industry",
-  "pe_ref": 20.17
+  "pe_ref": 19.87
  },
  {
   "code": "801130",
   "name": "纺织服饰",
   "type": "industry",
-  "pe_ref": 20.31
+  "pe_ref": 19.68
  },
  {
   "code": "801140",
   "name": "轻工制造",
   "type": "industry",
-  "pe_ref": 22.53
+  "pe_ref": 21.73
  },
  {
   "code": "801150",
   "name": "医药生物",
   "type": "industry",
-  "pe_ref": 28.08
+  "pe_ref": 27.64
  },
  {
   "code": "801160",
   "name": "公用事业",
   "type": "industry",
-  "pe_ref": 20.12
+  "pe_ref": 20.25
  },
  {
   "code": "801170",
   "name": "交通运输",
   "type": "industry",
-  "pe_ref": 14.44
+  "pe_ref": 14.78
  },
  {
   "code": "801180",
   "name": "房地产",
   "type": "industry",
-  "pe_ref": 8.44
+  "pe_ref": 8.62
  },
  {
   "code": "801200",
   "name": "商贸零售",
   "type": "industry",
-  "pe_ref": 21.68
+  "pe_ref": 21.11
  },
  {
   "code": "801210",
   "name": "社会服务",
   "type": "industry",
-  "pe_ref": 30.63
+  "pe_ref": 29.42
  },
  {
   "code": "801780",
   "name": "银行",
   "type": "industry",
-  "pe_ref": 7.27
+  "pe_ref": 7.63
  },
  {
   "code": "801790",
   "name": "非银金融",
   "type": "industry",
-  "pe_ref": 7.98
+  "pe_ref": 7.48
  },
  {
   "code": "801230",
   "name": "综合",
   "type": "industry",
-  "pe_ref": 69.71
+  "pe_ref": 65.3
  },
  {
   "code": "801710",
   "name": "建筑材料",
   "type": "industry",
-  "pe_ref": 33.38
+  "pe_ref": 29.8
  },
  {
   "code": "801720",
   "name": "建筑装饰",
   "type": "industry",
-  "pe_ref": 10.77
+  "pe_ref": 10.56
  },
  {
   "code": "801730",
   "name": "电力设备",
   "type": "industry",
-  "pe_ref": 27.35
+  "pe_ref": 24.05
  },
  {
   "code": "801890",
   "name": "机械设备",
   "type": "industry",
-  "pe_ref": 38.42
+  "pe_ref": 33.97
  },
  {
   "code": "801740",
   "name": "国防军工",
   "type": "industry",
-  "pe_ref": 51.39
+  "pe_ref": 49.78
  },
  {
   "code": "801750",
   "name": "计算机",
   "type": "industry",
-  "pe_ref": 43.11
+  "pe_ref": 39.09
  },
  {
   "code": "801760",
   "name": "传媒",
   "type": "industry",
-  "pe_ref": 23.7
+  "pe_ref": 24.57
  },
  {
   "code": "801770",
   "name": "通信",
   "type": "industry",
-  "pe_ref": 29.52
+  "pe_ref": 27.21
  },
  {
   "code": "801950",
   "name": "煤炭",
   "type": "industry",
-  "pe_ref": 18.09
+  "pe_ref": 17.37
  },
  {
   "code": "801960",
   "name": "石油石化",
   "type": "industry",
-  "pe_ref": 13.23
+  "pe_ref": 13.29
  },
  {
   "code": "801970",
   "name": "环保",
   "type": "industry",
-  "pe_ref": 19.05
+  "pe_ref": 18.1
  },
  {
   "code": "801980",
   "name": "美容护理",
   "type": "industry",
-  "pe_ref": 26.32
+  "pe_ref": 26.82
+ },
+ {
+  "code": "CHINA_INTL",
+  "name": "中概互联网",
+  "type": "us_stock",
+  "pe_ref": null,
+  "stock_pe": [
+   {
+    "code": "00136.HK",
+    "name": "中国儒意",
+    "price": 1.47,
+    "pe": 13.7
+   },
+   {
+    "code": "00241.HK",
+    "name": "阿里健康",
+    "price": 2.85,
+    "pe": 23.88
+   },
+   {
+    "code": "00700.HK",
+    "name": "腾讯控股",
+    "price": 421.4,
+    "pe": 17.09
+   },
+   {
+    "code": "00780.HK",
+    "name": "同程旅行",
+    "price": 9.8,
+    "pe": 9.71
+   },
+   {
+    "code": "00941.HK",
+    "name": "中国移动",
+    "price": 80.5,
+    "pe": 12.71
+   },
+   {
+    "code": "01024.HK",
+    "name": "快手-W",
+    "price": 29.0,
+    "pe": 6.73
+   },
+   {
+    "code": "01357.HK",
+    "name": "美图公司",
+    "price": 3.71,
+    "pe": 29.15
+   },
+   {
+    "code": "01698.HK",
+    "name": "腾讯音乐-SW",
+    "price": 33.32,
+    "pe": 9.49
+   },
+   {
+    "code": "01810.HK",
+    "name": "小米集团-W",
+    "price": 24.88,
+    "pe": 15.56
+   },
+   {
+    "code": "01833.HK",
+    "name": "平安好医生",
+    "price": 5.74,
+    "pe": 32.69
+   },
+   {
+    "code": "02400.HK",
+    "name": "心动公司",
+    "price": 41.7,
+    "pe": 13.44
+   },
+   {
+    "code": "02518.HK",
+    "name": "汽车之家-S",
+    "price": 38.94,
+    "pe": 13.75
+   },
+   {
+    "code": "03888.HK",
+    "name": "金山软件",
+    "price": 26.16,
+    "pe": 18.28
+   },
+   {
+    "code": "06060.HK",
+    "name": "众安在线",
+    "price": 9.46,
+    "pe": 14.48
+   },
+   {
+    "code": "06618.HK",
+    "name": "京东健康",
+    "price": 35.86,
+    "pe": 21.41
+   },
+   {
+    "code": "09618.HK",
+    "name": "京东集团-SW",
+    "price": 105.4,
+    "pe": 15.13
+   },
+   {
+    "code": "09626.HK",
+    "name": "哔哩哔哩-W",
+    "price": 118.7,
+    "pe": 41.85
+   },
+   {
+    "code": "09888.HK",
+    "name": "百度集团-SW",
+    "price": 81.55,
+    "pe": 39.72
+   },
+   {
+    "code": "09961.HK",
+    "name": "携程集团-S",
+    "price": 302.8,
+    "pe": 6.49
+   },
+   {
+    "code": "09988.HK",
+    "name": "阿里巴巴-W",
+    "price": 108.2,
+    "pe": 22.81
+   },
+   {
+    "code": "09999.HK",
+    "name": "网易-SW",
+    "price": 195.3,
+    "pe": 18.47
+   },
+   {
+    "code": "BABA",
+    "name": "阿里巴巴-W(ADR)",
+    "price": 110.85,
+    "pe": 17.45
+   },
+   {
+    "code": "FUTU",
+    "name": "富途控股(ADR)",
+    "price": 114.06,
+    "pe": 80.49
+   },
+   {
+    "code": "GDS",
+    "name": "世纪互联(ADR)",
+    "price": 29.6,
+    "pe": 36.01
+   },
+   {
+    "code": "JD",
+    "name": "京东集团-SW(ADR)",
+    "price": 26.78,
+    "pe": 8.0
+   },
+   {
+    "code": "LI",
+    "name": "理想汽车(ADR)",
+    "price": 11.75,
+    "pe": 15.06
+   },
+   {
+    "code": "MOMO",
+    "name": "陌陌(ADR)",
+    "price": 4.75,
+    "pe": 14.09
+   },
+   {
+    "code": "NTES",
+    "name": "网易-SW(ADR)",
+    "price": 124.76,
+    "pe": 15.0
+   },
+   {
+    "code": "PDD",
+    "name": "拼多多(ADR)",
+    "price": 81.96,
+    "pe": 33.61
+   },
+   {
+    "code": "SOHU",
+    "name": "搜狐(ADR)",
+    "price": 12.56,
+    "pe": 9.0
+   },
+   {
+    "code": "TIGR",
+    "name": "老虎证券(ADR)",
+    "price": 4.34,
+    "pe": 67.81
+   },
+   {
+    "code": "VIPS",
+    "name": "唯品会(ADR)",
+    "price": 12.88,
+    "pe": 5.0
+   },
+   {
+    "code": "WB",
+    "name": "微博(ADR)",
+    "price": 6.56,
+    "pe": 25.04
+   },
+   {
+    "code": "YUMC",
+    "name": "百胜中国(ADR)",
+    "price": 43.11,
+    "pe": 17.11
+   }
+  ],
+  "last_updated": "2026-10-14"
  }
 ]
