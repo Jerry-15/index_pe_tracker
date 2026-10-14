@@ -428,6 +428,30 @@ class H30533SourceTests(unittest.TestCase):
                     "PDD", 80, "USD", 1, 1, "2026-10-13", "fixture", ads_ratio=ratio
                 )
 
+    def test_current_pe_reports_malformed_configured_ads_ratio(self):
+        source = USDataSource()
+        with mock.patch.object(source, "ADS_RATIO", {"BABA": "not-a-number"}), \
+             mock.patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+             mock.patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                 "EPS_TTM": 2.0,
+                 "CURRENCY": "USD",
+                 "REPORT_DATE": "2026-09-30",
+             }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertIsNotNone(record)
+        self.assertIn("invalid ads_ratio", record["validity_reason"])
+        self.assertNotIn("pe", record)
+
+    def test_common_input_reports_unsupported_currency(self):
+        record = USDataSource.build_input_record(
+            "BABA", price=80, currency="EUR", shares_or_market_cap=1,
+            profit_ttm=1, financial_as_of="2026-09-30", source="fixture", ads_ratio=8,
+        )
+
+        self.assertEqual(record["currency"], "EUR")
+        self.assertIn("unsupported currency: EUR", record["validity_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

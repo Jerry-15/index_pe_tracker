@@ -11,6 +11,8 @@ from config import API_RETRY_TIMES, API_RETRY_DELAY
 class USDataSource:
     """美股数据获取：行情 + 财务指标（EPS_TTM / ADS校正）"""
 
+    SUPPORTED_CURRENCIES = frozenset(("CNY", "HKD", "USD"))
+
     # ADS比例：1 ADS = N 股普通股（BABA 为 8:1）
     ADS_RATIO = {
         "BABA": 8, "PDD": 1, "JD": 1, "BIDU": 1, "NTES": 1, "MOMO": 1,
@@ -55,6 +57,11 @@ class USDataSource:
                 is_missing = False
             if is_missing:
                 missing.append(field)
+        diagnostics = [f"missing {field}" for field in missing]
+        if currency is not None and not pd.isna(currency):
+            currency_key = str(currency).strip().upper()
+            if currency_key not in USDataSource.SUPPORTED_CURRENCIES:
+                diagnostics.append(f"unsupported currency: {currency}")
         return {
             "code": code,
             "price": price,
@@ -64,7 +71,7 @@ class USDataSource:
             "financial_as_of": financial_as_of,
             "source": source,
             "ads_ratio": int(ads_ratio) if ads_ratio.is_integer() else ads_ratio,
-            "validity_reason": "; ".join(f"missing {field}" for field in missing) or None,
+            "validity_reason": "; ".join(diagnostics) or None,
         }
 
     def _get_fx_rate(self) -> float:
@@ -234,6 +241,26 @@ class USDataSource:
                 # 美股：根据实际币种决定换算方式
                 rate = self._get_fx_rate()
                 ads_ratio = self.ADS_RATIO.get(stock_code, 1)
+                try:
+                    ads_ratio = float(ads_ratio)
+                except (TypeError, ValueError):
+                    return {
+                        "code": stock_code,
+                        "price": round(price, 2),
+                        "currency": currency,
+                        "ads_ratio": ads_ratio,
+                        "eps_ttm_usd": None,
+                        "validity_reason": "invalid ads_ratio",
+                    }
+                if not math.isfinite(ads_ratio) or ads_ratio <= 0:
+                    return {
+                        "code": stock_code,
+                        "price": round(price, 2),
+                        "currency": currency,
+                        "ads_ratio": ads_ratio,
+                        "eps_ttm_usd": None,
+                        "validity_reason": "invalid ads_ratio",
+                    }
                 if currency == "USD":
                     # EPS 已经是 USD，直接用（不再除以汇率）
                     eps_usd = float(eps_ttm) * ads_ratio
