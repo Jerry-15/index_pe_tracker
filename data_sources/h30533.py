@@ -40,14 +40,8 @@ class H30533Source:
     mappings reflect the payloads covered by the parser tests and are kept
     here so endpoint drift fails loudly instead of becoming a custom basket.
     """
-    OFFICIAL_URL = os.getenv(
-        "H30533_OFFICIAL_URL",
-        "https://www.csindex.com.cn/csindex-home/index/constituents",
-    )
-    ETF_URL = os.getenv(
-        "H30533_ETF_URL",
-        "https://www.efunds.com.cn/etrade/fund/513050/holdings",
-    )
+    DEFAULT_OFFICIAL_URL = "https://www.csindex.com.cn/csindex-home/index/constituents"
+    DEFAULT_ETF_URL = "https://www.efunds.com.cn/etrade/fund/513050/holdings"
     REQUIRED_COLUMNS = [
         "index_code", "security_code", "name", "exchange", "weight",
         "as_of", "source_type", "raw_metadata",
@@ -59,10 +53,14 @@ class H30533Source:
         fetcher: Optional[Callable[[str, Mapping[str, Any]], Any]] = None,
         timeout: int = H30533_SOURCE_TIMEOUT,
         retries: int = H30533_SOURCE_RETRIES,
+        official_url: Optional[str] = None,
+        etf_url: Optional[str] = None,
     ) -> None:
         self.fetcher = fetcher or self._request_json
         self.timeout = timeout
         self.retries = retries
+        self.official_url = official_url or os.getenv("H30533_OFFICIAL_URL", self.DEFAULT_OFFICIAL_URL)
+        self.etf_url = etf_url or os.getenv("H30533_ETF_URL", self.DEFAULT_ETF_URL)
         self.rejected_rows: list[dict[str, Any]] = []
         self.last_source_type: Optional[str] = None
 
@@ -75,21 +73,28 @@ class H30533Source:
         """Return the official snapshot, falling back to ETF disclosure."""
         errors = []
         for source_type, url, parser, params in (
-            ("csi_official", self.OFFICIAL_URL, self.parse_official, {"indexCode": CHINA_INTL_INDEX_CODE}),
-            ("etf_disclosure", self.ETF_URL, self.parse_etf_disclosure, {"fundCode": CHINA_INTL_FUND_CODE}),
+            ("csi_official", self.official_url, self.parse_official, {"indexCode": CHINA_INTL_INDEX_CODE}),
+            ("etf_disclosure", self.etf_url, self.parse_etf_disclosure, {"fundCode": CHINA_INTL_FUND_CODE}),
         ):
             for attempt in range(self.retries + 1):
                 try:
                     result = parser(self.fetcher(url, params))
                     if result.empty:
-                        raise H30533SourceError("source returned no valid constituent rows")
+                        raise H30533SourceError("source returned no valid constituent rows", "empty_snapshot")
                     return result
+                except H30533SourceError as exc:
+                    errors.append({"source_type": source_type, "code": exc.code, "message": str(exc)})
+                    if attempt < self.retries and exc.code == "transport_error":
+                        time.sleep(0.2 * (attempt + 1))
+                    else:
+                        break
                 except Exception as exc:
-                    errors.append(f"{source_type}: {exc}")
+                    errors.append({"source_type": source_type, "code": "transport_error", "message": str(exc)})
                     if attempt < self.retries:
                         time.sleep(0.2 * (attempt + 1))
         raise H30533SourceError(
-            "; ".join(errors), "all_sources_rejected", errors=errors
+            "; ".join(error["message"] for error in errors),
+            "all_sources_rejected", errors=errors
         )
 
     def parse_official(self, payload: Any) -> pd.DataFrame:
@@ -101,13 +106,28 @@ class H30533Source:
     def normalize_code(self, code: Any, exchange: Any) -> str:
         value = str(code).strip().upper()
         market = str(exchange or "").strip().upper()
-        if value.endswith((".HK", ".SH", ".SZ", ".US")):
-            return value
-        if market in {"HK", "HKG", "港股", "香港"}:
+        if not value:
+            raise ValueError("invalid security code")
+        market = {
+            "HK": "HK", "HKG": "HK", "港股": "HK", "香港": "HK",
+            "SH": "SH", "SSE": "SH", "沪": "SH", "上海": "SH",
+            "SZ": "SZ", "SZSE": "SZ", "深": "SZ", "深圳": "SZ",
+            "US": "US", "NASDAQ": "US", "NYSE": "US",
+        }.get(market)
+        if market is None:
+            raise ValueError("unknown exchange")
+        suffix = {"HK": ".HK", "SH": ".SH", "SZ": ".SZ"}.get(market)
+        if suffix and value.endswith(suffix):
+            value = value[:-len(suffix)]
+        if market in {"HK", "SH", "SZ"} and not value.isdigit():
+            raise ValueError("invalid security code")
+        if market == "US" and not re.fullmatch(r"[A-Z][A-Z0-9.-]*", value):
+            raise ValueError("invalid security code")
+        if market == "HK":
             return f"{value.zfill(5)}.HK"
-        if market in {"SH", "SSE", "沪", "上海"}:
+        if market == "SH":
             return f"{value.zfill(6)}.SH"
-        if market in {"SZ", "SZSE", "深", "深圳"}:
+        if market == "SZ":
             return f"{value.zfill(6)}.SZ"
         return value
 
@@ -140,7 +160,7 @@ class H30533Source:
                 weight_raw = self._find_value(
                     raw, "weight", "weight_pct", "weightPercent", "ratio", "权重", "权重(%)"
                 )
-                if not code:
+                if code is None or not str(code).strip():
                     raise ValueError("missing security code")
                 if weight_raw is None or str(weight_raw).strip() == "":
                     raise ValueError("missing weight")
@@ -166,22 +186,24 @@ class H30533Source:
 
     @staticmethod
     def _validate_index_identity(payload: Any, source_type: str) -> None:
-        if source_type != "csi_official":
-            return
+        identity_key = "indexCode" if source_type == "csi_official" else "fundCode"
+        expected = CHINA_INTL_INDEX_CODE if source_type == "csi_official" else CHINA_INTL_FUND_CODE
         identity = H30533Source._source_field(
-            payload, source_type, "indexCode", "index_code", "indexId"
+            payload, source_type, identity_key,
+            "index_code" if source_type == "csi_official" else "fund_code",
+            "indexId" if source_type == "csi_official" else "fundId",
         )
         if identity is None:
             raise H30533SourceError(
-                "csi_official response does not identify an index",
-                "missing_index_identity",
-                expected=CHINA_INTL_INDEX_CODE,
+                f"{source_type} response does not identify its {('index' if source_type == 'csi_official' else 'fund')}",
+                "missing_index_identity" if source_type == "csi_official" else "missing_fund_identity",
+                expected=expected,
             )
-        if str(identity).strip().upper() != CHINA_INTL_INDEX_CODE:
+        if str(identity).strip().upper() != expected:
             raise H30533SourceError(
-                f"csi_official response identifies {identity}, not {CHINA_INTL_INDEX_CODE}",
-                "wrong_index",
-                expected=CHINA_INTL_INDEX_CODE,
+                f"{source_type} response identifies {identity}, not {expected}",
+                "wrong_index" if source_type == "csi_official" else "wrong_fund",
+                expected=expected,
                 actual=str(identity),
             )
 

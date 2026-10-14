@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 import pandas as pd
 
@@ -60,6 +61,7 @@ class H30533SourceTests(unittest.TestCase):
     def test_parse_etf_disclosure_is_explicit_fallback(self):
         source = H30533Source()
         payload = {
+            "fundCode": CHINA_INTL_FUND_CODE,
             "as_of": "2026/10/10",
             "holdings": [
                 {"code": "00700", "name": "Tencent", "market": "HK", "weight_pct": "7.1%"},
@@ -73,6 +75,27 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]["security_code"], "00700.HK")
         self.assertEqual(result.iloc[0]["weight"], 0.071)
         self.assertEqual(source.last_source_type, "etf_disclosure")
+
+    def test_etf_disclosure_requires_matching_fund_identity(self):
+        source = H30533Source()
+
+        with self.assertRaises(H30533SourceError) as raised:
+            source.parse_etf_disclosure({
+                "fundCode": "000001",
+                "as_of": "2026-10-10",
+                "holdings": [],
+            })
+
+        self.assertEqual(raised.exception.code, "wrong_fund")
+        self.assertEqual(raised.exception.details["expected"], CHINA_INTL_FUND_CODE)
+
+        with self.assertRaises(H30533SourceError) as raised:
+            source.parse_etf_disclosure({
+                "as_of": "2026-10-10",
+                "holdings": [],
+            })
+
+        self.assertEqual(raised.exception.code, "missing_fund_identity")
 
     def test_missing_code_and_weight_are_rejected_with_reasons(self):
         source = H30533Source()
@@ -181,6 +204,7 @@ class H30533SourceTests(unittest.TestCase):
             if params.get("indexCode"):
                 raise RuntimeError("CSI unavailable")
             return {
+                "fundCode": CHINA_INTL_FUND_CODE,
                 "as_of": "2026-10-10",
                 "holdings": [{"code": "00700", "name": "Tencent", "market": "HK", "weight_pct": 7.1}],
             }
@@ -197,6 +221,53 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(source.normalize_code("00700", "HK"), "00700.HK")
         self.assertEqual(source.normalize_code("600000", "SH"), "600000.SH")
         self.assertEqual(source.normalize_code("BABA", "US"), "BABA")
+
+    def test_invalid_codes_and_unknown_exchanges_are_rejected(self):
+        source = H30533Source()
+        result = source.parse_official({
+            "data": {
+                "indexCode": CHINA_INTL_INDEX_CODE,
+                "asOfDate": "2026-10-13",
+                "constituents": [
+                    {"code": "   ", "name": "blank", "exchange": "HK", "weight": 1},
+                    {"code": "00700", "name": "unknown", "exchange": "OTC", "weight": 1},
+                    {"code": "not valid!", "name": "bad", "exchange": "US", "weight": 1},
+                ],
+            },
+        })
+
+        self.assertTrue(result.empty)
+        self.assertEqual(len(source.rejected_rows), 3)
+
+    def test_deterministic_parser_failure_is_not_retried(self):
+        calls = []
+
+        def fetcher(url, params):
+            calls.append(params)
+            return {"data": {"indexCode": "000300", "asOfDate": "2026-10-13", "constituents": []}}
+
+        source = H30533Source(fetcher=fetcher, retries=2)
+
+        with self.assertRaises(H30533SourceError) as raised:
+            source.get_snapshot()
+
+        self.assertEqual(raised.exception.code, "all_sources_rejected")
+        self.assertEqual(calls, [{"indexCode": CHINA_INTL_INDEX_CODE}, {"fundCode": CHINA_INTL_FUND_CODE}])
+        self.assertEqual(raised.exception.details["errors"][0]["code"], "wrong_index")
+
+    def test_urls_are_injected_and_environment_is_read_per_instance(self):
+        first = H30533Source(official_url="https://one", etf_url="https://two")
+        self.assertEqual(first.official_url, "https://one")
+        self.assertEqual(first.etf_url, "https://two")
+
+        with mock.patch.dict("os.environ", {
+            "H30533_OFFICIAL_URL": "https://env-one",
+            "H30533_ETF_URL": "https://env-two",
+        }):
+            second = H30533Source()
+
+        self.assertEqual(second.official_url, "https://env-one")
+        self.assertEqual(second.etf_url, "https://env-two")
 
 
 if __name__ == "__main__":
