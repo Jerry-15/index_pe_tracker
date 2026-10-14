@@ -24,6 +24,7 @@ class H30533SourceTests(unittest.TestCase):
                 "weight": 0.8, "issuer_id": "ALIBABA", "security_type": "adr",
                 "ads_ratio": 8.0, "source_type": "csi_official",
                 "as_of": "2026-10-13", "raw_metadata": {"rank": 1},
+                "is_duplicate_issuer": False,
             }])
             daily = pd.DataFrame([{
                 "trade_date": "2026-10-14", "index_code": "H30533",
@@ -48,6 +49,7 @@ class H30533SourceTests(unittest.TestCase):
             loaded = cache.load_h30533_snapshot("H30533")
             self.assertEqual(loaded["constituents"].loc[0, "security_code"], "BABA")
             self.assertEqual(loaded["constituents"].loc[0, "raw_metadata"], {"rank": 1})
+            self.assertFalse(loaded["constituents"].loc[0, "is_duplicate_issuer"])
             self.assertAlmostEqual(loaded["daily"].loc[0, "earnings_yield"], 0.08)
             self.assertEqual(loaded["daily"].loc[0, "source_date"], "2026-10-13")
             self.assertAlmostEqual(loaded["securities"].loc[0, "verified_shares"], 10.0)
@@ -104,6 +106,7 @@ class H30533SourceTests(unittest.TestCase):
                 "ads_ratio": 8.0, "source_type": "csi_official",
                 "as_of": "2026-10-13", "constituent_as_of": "2026-10-13",
                 "raw_metadata": {"rank": 1}, "validity_reason": "valid",
+                "is_duplicate_issuer": True,
             }])
             daily = pd.DataFrame([{
                 "trade_date": "2026-10-14", "index_code": "H30533",
@@ -130,6 +133,7 @@ class H30533SourceTests(unittest.TestCase):
 
             self.assertEqual(loaded["constituents"].loc[0, "constituent_as_of"], "2026-10-13")
             self.assertEqual(loaded["constituents"].loc[0, "raw_metadata"], {"rank": 1})
+            self.assertTrue(loaded["constituents"].loc[0, "is_duplicate_issuer"])
             self.assertEqual(loaded["daily"].loc[0, "valid_count"], 1)
             self.assertAlmostEqual(loaded["daily"].loc[0, "index_pe"], 12.5)
             self.assertEqual(loaded["securities"].loc[0, "currency"], "USD")
@@ -141,7 +145,7 @@ class H30533SourceTests(unittest.TestCase):
                     "snapshot_date", "index_code", "security_code", "name", "exchange",
                     "weight", "issuer_id", "security_type", "ads_ratio", "source_type",
                     "as_of", "constituent_as_of", "raw_metadata", "validity_reason",
-                    "legacy_constituent",
+                    "is_duplicate_issuer", "legacy_constituent",
                 },
                 "h30533_daily_valuation": {
                     "trade_date", "index_code", "pe_ratio", "index_pe", "earnings_yield",

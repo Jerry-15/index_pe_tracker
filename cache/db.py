@@ -142,6 +142,7 @@ class CacheDB:
                 issuer_id TEXT,
                 security_type TEXT,
                 ads_ratio REAL,
+                is_duplicate_issuer INTEGER,
                 source_type TEXT,
                 as_of TEXT,
                 constituent_as_of TEXT,
@@ -200,6 +201,7 @@ class CacheDB:
                 "snapshot_date": "TEXT", "index_code": "TEXT", "security_code": "TEXT",
                 "name": "TEXT", "exchange": "TEXT", "weight": "REAL",
                 "issuer_id": "TEXT", "security_type": "TEXT", "ads_ratio": "REAL",
+                "is_duplicate_issuer": "INTEGER",
                 "source_type": "TEXT", "as_of": "TEXT", "constituent_as_of": "TEXT",
                 "raw_metadata": "TEXT",
                 "validity_reason": "TEXT",
@@ -307,7 +309,7 @@ class CacheDB:
             securities, {"index_pe": "pe", "source": "data_source"})
         constituent_columns = [
             "snapshot_date", "index_code", "security_code", "name", "exchange", "weight",
-            "issuer_id", "security_type", "ads_ratio", "source_type", "as_of",
+            "issuer_id", "security_type", "ads_ratio", "is_duplicate_issuer", "source_type", "as_of",
             "constituent_as_of", "raw_metadata", "validity_reason",
         ]
         daily_columns = [
@@ -371,6 +373,9 @@ class CacheDB:
                     conn, params=[index_code],
                 )
             if not result["constituents"].empty:
+                result["constituents"]["is_duplicate_issuer"] = (
+                    result["constituents"]["is_duplicate_issuer"].fillna(False).astype(bool)
+                )
                 result["constituents"]["raw_metadata"] = result["constituents"]["raw_metadata"].apply(
                     lambda value: json.loads(value) if isinstance(value, str) else value
                 )
