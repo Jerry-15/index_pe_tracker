@@ -530,6 +530,25 @@ class H30533SourceTests(unittest.TestCase):
                 record = source.get_current_pe("BABA")
 
             self.assertIn("non_positive profit_ttm", record["validity_reason"])
+            self.assertNotIn("pe", record)
+
+    def test_current_pe_does_not_calculate_with_non_positive_profit_when_inputs_are_complete(self):
+        source = USDataSource()
+        complete_record = {
+            "code": "BABA", "price": 80.0, "currency": "USD",
+            "shares_or_market_cap": 1.0, "profit_ttm": -1.0,
+            "financial_as_of": "2026-09-30", "source": "fixture",
+            "ads_ratio": 8.0, "validity_reason": "non_positive profit_ttm",
+        }
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+             patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                 "EPS_TTM": 2.0, "PROFIT_TTM": -1.0, "CURRENCY": "USD",
+                 "REPORT_DATE": "2026-09-30",
+             }])), \
+             patch.object(source, "build_input_record", return_value=complete_record):
+            record = source.get_current_pe("BABA")
+
+        self.assertNotIn("pe", record)
 
     def test_common_input_reports_invalid_numeric_values(self):
         cases = (
@@ -547,6 +566,18 @@ class H30533SourceTests(unittest.TestCase):
                 record = USDataSource.build_input_record("BABA", ads_ratio=8, **values)
 
             self.assertIn(f"invalid {field}", record["validity_reason"])
+
+    def test_common_input_reports_non_numeric_ads_ratio_without_raising(self):
+        for value in ("not-a-number", object()):
+            with self.subTest(value=value):
+                record = USDataSource.build_input_record(
+                    "BABA", price=80, currency="USD", shares_or_market_cap=1,
+                    profit_ttm=1, financial_as_of="2026-09-30", source="fixture",
+                    ads_ratio=value,
+                )
+
+            self.assertEqual(record["ads_ratio"], value)
+            self.assertIn("invalid ads_ratio", record["validity_reason"])
 
     def test_common_input_reports_none_and_non_finite_numeric_values(self):
         for value in (None, float("nan"), float("inf"), float("-inf")):

@@ -56,10 +56,17 @@ class USDataSource:
             missing.append("currency")
         if financial_as_of is None:
             missing.append("financial_as_of")
-        if ads_ratio is not None and (not math.isfinite(ads_ratio) or ads_ratio <= 0):
-            missing.append("invalid ads_ratio")
-        elif ads_ratio is None:
+        ads_ratio_invalid = False
+        if ads_ratio is None:
             missing.append("ads_ratio")
+        else:
+            try:
+                ads_ratio = float(ads_ratio)
+                ads_ratio_invalid = not math.isfinite(ads_ratio) or ads_ratio <= 0
+            except (TypeError, ValueError):
+                ads_ratio_invalid = True
+            if ads_ratio_invalid:
+                invalid.append("ads_ratio")
         return {
             "code": code,
             "price": price,
@@ -72,9 +79,7 @@ class USDataSource:
             "eps_ttm": None,
             "validity_reason": "; ".join(
                 [*(f"missing {field}" for field in missing),
-                 *(f"invalid {field}" for field in invalid),
-                 *( ["invalid ads_ratio"] if ads_ratio is not None and
-                    (not math.isfinite(ads_ratio) or ads_ratio <= 0) else [])]
+                 *(f"invalid {field}" for field in invalid)]
             ) or None,
         }
 
@@ -277,7 +282,8 @@ class USDataSource:
             record["validity_reason"] = "; ".join(filter(None, [
                 record["validity_reason"], "HKD/USD conversion unavailable"
             ]))
-        if pe_inputs_missing or eps_ttm is None or eps_ttm <= 0 or currency == "HKD":
+        if (pe_inputs_missing or profit_ttm is None or profit_ttm <= 0 or
+                eps_ttm is None or eps_ttm <= 0 or currency == "HKD"):
             if eps_ttm is not None and eps_ttm <= 0:
                 record["validity_reason"] = "; ".join(
                     filter(None, [record["validity_reason"], "non_positive eps_ttm"])
