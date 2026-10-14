@@ -201,6 +201,7 @@ class USDataSource:
         eps_ttm = None
         profit_ttm = None
         financial_as_of = None
+        unsupported_currency = None
         try:
             quotes = self.get_daily_quotes(stock_code)
             if not quotes.empty and "close" in quotes.columns:
@@ -229,13 +230,16 @@ class USDataSource:
                         financial_as_of = str(fin.iloc[0][col])
                         break
                 if "CURRENCY" in fin.columns and pd.notna(fin.iloc[0]["CURRENCY"]):
-                    curr_str = str(fin.iloc[0]["CURRENCY"])
+                    curr_str = str(fin.iloc[0]["CURRENCY"]).strip()
+                    currency = None
                     if "美元" in curr_str or "USD" in curr_str.upper():
                         currency = "USD"
                     elif "港元" in curr_str or "HKD" in curr_str.upper():
                         currency = "HKD"
                     elif "人民币" in curr_str or "CNY" in curr_str.upper():
                         currency = "CNY"
+                    else:
+                        unsupported_currency = curr_str
         except Exception:
             pass
 
@@ -244,6 +248,11 @@ class USDataSource:
             None, profit_ttm, financial_as_of,
             "akshare", ads_ratio,
         )
+        if unsupported_currency:
+            record["validity_reason"] = "; ".join(filter(None, [
+                record["validity_reason"],
+                f"unsupported currency: {unsupported_currency}",
+            ]))
         record["eps_ttm"] = round(eps_ttm, 4) if eps_ttm is not None else None
         record["eps"] = record["eps_ttm"]
         pe_inputs_missing = any(

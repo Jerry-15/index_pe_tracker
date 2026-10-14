@@ -459,6 +459,36 @@ class H30533SourceTests(unittest.TestCase):
         self.assertIn("missing currency", record["validity_reason"])
         self.assertIn("missing ads_ratio", record["validity_reason"])
 
+    def test_current_pe_uses_profit_field_for_common_record(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+             patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                 "EPS_TTM": 2.0,
+                 "PROFIT_TTM": 123.45,
+                 "CURRENCY": "USD",
+                 "REPORT_DATE": "2026-09-30",
+             }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertEqual(record["profit_ttm"], 123.45)
+        self.assertEqual(record["eps_ttm"], 2.0)
+
+    def test_current_pe_rejects_explicit_unsupported_currency(self):
+        source = USDataSource()
+        for currency in ("EUR", "GBP", "unknown"):
+            with self.subTest(currency=currency), \
+                 patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+                 patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                     "EPS_TTM": 2.0,
+                     "CURRENCY": currency,
+                     "REPORT_DATE": "2026-09-30",
+                 }])):
+                record = source.get_current_pe("BABA")
+
+            self.assertIsNone(record["currency"])
+            self.assertIn("unsupported currency", record["validity_reason"])
+            self.assertNotIn("pe", record)
+
     def test_daily_quotes_preserve_unavailable_outstanding_shares(self):
         source = USDataSource()
         with patch("data_sources.us.ak.stock_us_daily", return_value=pd.DataFrame([
