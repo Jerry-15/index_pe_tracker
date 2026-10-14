@@ -111,12 +111,19 @@ class USETL:
             progress_cb("获取成分股列表...")
 
         snapshot = self.h30533_source.get_snapshot()
+        snapshot = snapshot.copy()
+        snapshot["validity_reason"] = snapshot.get(
+            "validity_reason", pd.Series(index=snapshot.index)
+        )
+        snapshot["constituent_as_of"] = snapshot["as_of"]
+        snapshot["snapshot_date"] = snapshot["as_of"]
         total = len(snapshot)
 
         if progress_cb:
             progress_cb(f"开始更新 {self.index_name}：{total} 只股票")
 
         results = []
+        valuation_rows = []
         for i, constituent in snapshot.iterrows():
             code = constituent["security_code"]
             name = constituent["name"]
@@ -132,6 +139,26 @@ class USETL:
                 "constituent_as_of": constituent["as_of"],
             })
             results.append(record)
+            valuation_rows.append({
+                "security_code": code,
+                "name": name,
+                "issuer_id": constituent.get("issuer_id"),
+                "weight": constituent["weight"],
+                "price": record.get("price"),
+                "currency": record.get("currency"),
+                "market_cap": record.get("market_cap"),
+                "verified_shares": record.get("verified_shares"),
+                "profit_ttm": record.get("profit_ttm"),
+                "earnings_yield": None,
+                "index_pe": None,
+                "pe": record.get("pe"),
+                "financial_as_of": record.get("financial_as_of"),
+                "source_date": constituent["as_of"],
+                "source_type": constituent["source_type"],
+                "source": record.get("source"),
+                "data_source": record.get("data_source", record.get("source")),
+                "validity_reason": record.get("validity_reason"),
+            })
             time.sleep(API_BATCH_DELAY)
 
         if not results:
@@ -147,11 +174,14 @@ class USETL:
             "total_market_cap": None,
             "total_profit_ttm": None,
             "pe_ratio": aggregate["pe"],
+            "index_pe": aggregate["pe"],
             "earnings_yield": aggregate["earnings_yield"],
             "stock_count": aggregate["valid_count"],
             "weight_coverage": aggregate["weight_coverage"],
             "negative_profit_count": aggregate["negative_profit_count"],
             "missing_count": aggregate["missing_count"],
+            "invalid_count": aggregate["invalid_count"],
+            "source_date": snapshot.iloc[0]["as_of"],
             "validity_reason": aggregate["reason"],
             "source_type": snapshot.iloc[0]["source_type"],
             "constituent_as_of": snapshot.iloc[0]["as_of"],
@@ -159,6 +189,9 @@ class USETL:
         }
         pe_df = pd.DataFrame([row])
 
+        self.cache.save_h30533_snapshot(
+            self.index_code, snapshot, pe_df, pd.DataFrame(valuation_rows)
+        )
         self.cache.save_us_pe_snapshot(today, pe_df)
         self.cache.save_us_stock_pe(today, df)
         self._recompute_us_stats()

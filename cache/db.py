@@ -162,6 +162,7 @@ class CacheDB:
                 weight_coverage REAL,
                 negative_profit_count INTEGER,
                 missing_count INTEGER,
+                invalid_count INTEGER,
                 source_type TEXT,
                 source_date TEXT,
                 constituent_as_of TEXT,
@@ -210,7 +211,7 @@ class CacheDB:
                 "total_profit_ttm": "REAL", "stock_count": "INTEGER",
                 "valid_count": "INTEGER", "weight_coverage": "REAL",
                 "negative_profit_count": "INTEGER",
-                "missing_count": "INTEGER", "source_type": "TEXT",
+                "missing_count": "INTEGER", "invalid_count": "INTEGER", "source_type": "TEXT",
                 "source_date": "TEXT", "constituent_as_of": "TEXT",
                 "constituent_basis": "TEXT",
                 "validity_reason": "TEXT", "updated_at": "REAL",
@@ -268,7 +269,7 @@ class CacheDB:
             "trade_date", "index_code", "pe_ratio", "earnings_yield",
             "index_pe", "total_market_cap", "total_profit_ttm", "stock_count", "valid_count",
             "weight_coverage",
-            "negative_profit_count", "missing_count", "source_type", "source_date",
+            "negative_profit_count", "missing_count", "invalid_count", "source_type", "source_date",
             "constituent_as_of", "constituent_basis", "validity_reason", "updated_at",
         ]
         if not set(df.columns).intersection(set(columns[2:-1])):
@@ -312,7 +313,7 @@ class CacheDB:
         daily_columns = [
             "trade_date", "index_code", "pe_ratio", "index_pe", "earnings_yield",
             "total_market_cap", "total_profit_ttm", "stock_count", "valid_count",
-            "weight_coverage", "negative_profit_count", "missing_count", "source_type",
+            "weight_coverage", "negative_profit_count", "missing_count", "invalid_count", "source_type",
             "source_date", "constituent_as_of", "constituent_basis", "validity_reason",
             "updated_at",
         ]

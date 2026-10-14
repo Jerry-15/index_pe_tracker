@@ -307,6 +307,55 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]["negative_profit_count"], 1)
         self.assertEqual(result.iloc[0]["index_code"], CHINA_INTL_INDEX_CODE)
         self.assertEqual(result.iloc[0]["source_type"], "csi_official")
+
+    def test_pipeline_persists_invalid_h30533_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = CacheDB(Path(directory) / "h30533.db")
+            etl = USETL(cache=cache)
+            etl.h30533_source = MagicMock()
+            etl.source = MagicMock()
+            etl.h30533_source.get_snapshot.return_value = pd.DataFrame([
+                {"security_code": "BABA", "name": "Alibaba", "weight": 0.6,
+                 "source_type": "csi_official", "as_of": "2026-10-13"},
+                {"security_code": "PDD", "name": "PDD", "weight": 0.4,
+                 "source_type": "csi_official", "as_of": "2026-10-13"},
+            ])
+            etl.source.get_current_pe.side_effect = [
+                {"price": None, "market_cap": None, "profit_ttm": None,
+                 "validity_reason": "missing price; missing profit_ttm"},
+                {"price": 50.0, "market_cap": 500.0, "profit_ttm": -5.0,
+                 "validity_reason": "non_positive profit_ttm"},
+            ]
+
+            with patch.object(etl, "_recompute_us_stats"), \
+                 patch("etl.pipeline_us.API_BATCH_DELAY", 0):
+                result = etl.run()
+
+            self.assertEqual(len(result), 1)
+            self.assertIsNone(result.iloc[0]["pe_ratio"])
+            self.assertIsNone(result.iloc[0]["index_pe"])
+            self.assertEqual(result.iloc[0]["stock_count"], 0)
+            self.assertEqual(result.iloc[0]["weight_coverage"], 0)
+            self.assertEqual(result.iloc[0]["missing_count"], 1)
+            self.assertEqual(result.iloc[0]["negative_profit_count"], 1)
+            self.assertEqual(result.iloc[0]["invalid_count"], 0)
+            self.assertIn("coverage", result.iloc[0]["validity_reason"])
+
+            snapshot = cache.load_h30533_snapshot(CHINA_INTL_INDEX_CODE)
+            self.assertEqual(snapshot["constituents"]["security_code"].tolist(), ["BABA", "PDD"])
+            self.assertEqual(snapshot["securities"]["security_code"].tolist(), ["BABA", "PDD"])
+            self.assertEqual(
+                snapshot["securities"]["validity_reason"].tolist(),
+                ["missing price; missing profit_ttm", "non_positive profit_ttm"],
+            )
+            self.assertEqual(snapshot["daily"].iloc[0]["valid_count"], 0)
+            self.assertEqual(snapshot["daily"].iloc[0]["weight_coverage"], 0)
+            self.assertEqual(snapshot["daily"].iloc[0]["invalid_count"], 0)
+            self.assertIsNone(snapshot["daily"].iloc[0]["index_pe"])
+            self.assertEqual(snapshot["daily"].iloc[0]["source_type"], "csi_official")
+            self.assertEqual(snapshot["daily"].iloc[0]["source_date"], "2026-10-13")
+            self.assertEqual(snapshot["daily"].iloc[0]["constituent_as_of"], "2026-10-13")
+
     def test_official_payload_must_identify_h30533(self):
         source = H30533Source()
 
