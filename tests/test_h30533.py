@@ -1,11 +1,17 @@
 import unittest
 from unittest import mock
+from unittest.mock import MagicMock, patch
+import sqlite3
+import tempfile
+from pathlib import Path
 
 import pandas as pd
 
 from data_sources.h30533 import H30533Source, H30533SourceError
 from data_sources.us import USDataSource
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
+from cache.db import CacheDB
+from etl.pipeline_us import USETL
 
 
 class H30533SourceTests(unittest.TestCase):
@@ -442,6 +448,118 @@ class H30533SourceTests(unittest.TestCase):
         self.assertIsNotNone(record)
         self.assertIn("invalid ads_ratio", record["validity_reason"])
         self.assertNotIn("pe", record)
+
+    def test_current_pe_extracts_verified_shares_and_profit_from_source_records(self):
+        source = USDataSource()
+        with mock.patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+             "close": 80.0,
+             "market_cap": None,
+             "shares_outstanding": 10.0,
+         }])), mock.patch.object(source, "get_current_pe", return_value={
+             "verified_shares": 10.0, "profit_ttm": 80.0,
+         }):
+            record = source.get_current_pe("BABA")
+
+        self.assertEqual(record["verified_shares"], 10.0)
+        self.assertEqual(record["profit_ttm"], 80.0)
+        self.assertNotIn("market_cap", record)
+
+    def test_current_pe_source_fixture_shape(self):
+        source = USDataSource()
+        with mock.patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+             "close": 80.0,
+         }])), mock.patch.object(source, "get_financials", return_value=pd.DataFrame([{
+             "EPS_TTM": 2.0,
+            "CURRENCY": "USD",
+            "REPORT_DATE": "2026-09-30",
+            "NET_PROFIT_TTM": 80.0,
+         }])):
+            record = source.get_current_pe("BABA")
+
+    def test_h30533_snapshot_records_produce_pe_and_count_negative_profit(self):
+        etl = USETL(cache=MagicMock())
+        etl.h30533_source = MagicMock()
+        etl.source = MagicMock()
+        etl.h30533_source.get_snapshot.return_value = pd.DataFrame([
+            {"security_code": "BABA", "name": "Alibaba", "weight": 0.8,
+             "source_type": "csi_official", "as_of": "2026-10-13"},
+            {"security_code": "PDD", "name": "PDD", "weight": 0.2,
+             "source_type": "csi_official", "as_of": "2026-10-13"},
+        ])
+        etl.source.get_current_pe.side_effect = [
+            {"price": 80.0, "verified_shares": 10.0, "profit_ttm": 80.0},
+            {"price": 50.0, "market_cap": 500.0, "profit_ttm": -5.0},
+        ]
+
+        with patch.object(etl, "_recompute_us_stats"):
+            result = etl.run()
+
+        self.assertEqual(result.iloc[0]["pe_ratio"], 10.0)
+        self.assertEqual(result.iloc[0]["earnings_yield"], 0.1)
+        self.assertEqual(result.iloc[0]["negative_profit_count"], 1)
+        self.assertEqual(result.iloc[0]["index_code"], CHINA_INTL_INDEX_CODE)
+        self.assertEqual(result.iloc[0]["source_type"], "csi_official")
+
+    def test_h30533_persistence_keeps_canonical_metadata_in_all_tables(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = CacheDB(Path(directory) / "cache.db")
+            constituents = pd.DataFrame([{
+                "snapshot_date": "2026-10-13", "index_code": CHINA_INTL_INDEX_CODE,
+                "security_code": "BABA", "name": "Alibaba", "exchange": "US",
+                "weight": 0.8, "issuer_id": "ALIBABA", "security_type": "ADR",
+                "source_type": "csi_official", "as_of": "2026-10-13",
+                "validity_reason": "ok", "extra_constituent": "kept",
+            }])
+            daily = pd.DataFrame([{
+                "trade_date": "2026-10-13", "index_code": CHINA_INTL_INDEX_CODE,
+                "index_pe": 10.0, "earnings_yield": 0.1, "valid_count": 1,
+                "stock_count": 1, "weight_coverage": 0.8, "negative_profit_count": 0,
+                "missing_count": 0, "source_type": "csi_official",
+                "source_date": "2026-10-13", "constituent_basis": "H30533",
+                "validity_reason": "ok", "extra_daily": "kept",
+            }])
+            securities = pd.DataFrame([{
+                "snapshot_date": "2026-10-13", "index_code": CHINA_INTL_INDEX_CODE,
+                "security_code": "BABA", "name": "Alibaba", "issuer_id": "ALIBABA",
+                "currency": "USD", "weight": 0.8, "market_cap": 800.0,
+                "verified_shares": 10.0, "profit_ttm": 80.0, "earnings_yield": 0.1,
+                 "index_pe": 10.0, "financial_as_of": "2026-09-30",
+                 "source_date": "2026-10-13", "source_type": "csi_official", "source": "fixture",
+                "data_source": "fixture", "validity_reason": "ok",
+                "extra_security": "kept",
+            }])
+
+            cache.save_h30533_snapshot(CHINA_INTL_INDEX_CODE, constituents, daily, securities)
+            result = cache.load_h30533_snapshot(CHINA_INTL_INDEX_CODE)
+
+            self.assertEqual(result["constituents"].iloc[0]["validity_reason"], "ok")
+            self.assertEqual(result["daily"].iloc[0]["index_pe"], 10.0)
+            self.assertEqual(result["daily"].iloc[0]["valid_count"], 1)
+            self.assertEqual(result["securities"].iloc[0]["currency"], "USD")
+            self.assertEqual(result["securities"].iloc[0]["data_source"], "fixture")
+            self.assertEqual(result["securities"].iloc[0]["index_pe"], 10.0)
+            self.assertEqual(result["securities"].iloc[0]["extra_security"], "kept")
+
+    def test_h30533_atomic_replacement_rejects_mismatched_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = CacheDB(Path(directory) / "cache.db")
+            constituents = pd.DataFrame([{"snapshot_date": "2026-10-13", "security_code": "BABA",
+                                          "as_of": "2026-10-13", "source_type": "fixture",
+                                          "weight": 1, "validity_reason": "ok"}])
+            daily = pd.DataFrame([{"trade_date": "2026-10-13", "index_code": CHINA_INTL_INDEX_CODE,
+                                   "index_pe": 10, "source_date": "2026-10-13",
+                                   "source_type": "fixture", "validity_reason": "ok"}])
+            securities = pd.DataFrame([{"snapshot_date": "2026-10-13", "security_code": "BABA",
+                                        "source_date": "2026-10-13", "source_type": "fixture",
+                                        "weight": 1, "validity_reason": "ok"}])
+            cache.save_h30533_snapshot(CHINA_INTL_INDEX_CODE, constituents, daily, securities)
+            daily.loc[0, "source_date"] = "2026-10-12"
+
+            with self.assertRaises(ValueError):
+                cache.save_h30533_snapshot(CHINA_INTL_INDEX_CODE, constituents, daily, securities)
+
+            self.assertEqual(cache.load_h30533_snapshot(CHINA_INTL_INDEX_CODE)["daily"].iloc[0]["source_date"],
+                             "2026-10-13")
 
     def test_common_input_reports_unsupported_currency(self):
         record = USDataSource.build_input_record(

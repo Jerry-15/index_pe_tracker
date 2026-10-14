@@ -127,6 +127,116 @@ class CacheDB:
                     PRIMARY KEY (snapshot_date, code)
                 );
             """)
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS h30533_constituent_snapshot (
+                    snapshot_date TEXT NOT NULL, index_code TEXT NOT NULL, security_code TEXT NOT NULL,
+                    name TEXT, exchange TEXT, weight REAL, issuer_id TEXT, security_type TEXT,
+                    ads_ratio REAL, source_type TEXT, as_of TEXT, constituent_as_of TEXT,
+                    raw_metadata TEXT, validity_reason TEXT,
+                    PRIMARY KEY (snapshot_date, index_code, security_code)
+                );
+                CREATE TABLE IF NOT EXISTS h30533_daily_valuation (
+                    trade_date TEXT NOT NULL, index_code TEXT NOT NULL, pe_ratio REAL, index_pe REAL,
+                    earnings_yield REAL, total_market_cap REAL, total_profit_ttm REAL,
+                    stock_count INTEGER, valid_count INTEGER, weight_coverage REAL,
+                    negative_profit_count INTEGER, missing_count INTEGER, source_type TEXT,
+                    source_date TEXT, constituent_as_of TEXT, constituent_basis TEXT,
+                    validity_reason TEXT, updated_at REAL,
+                    PRIMARY KEY (trade_date, index_code)
+                );
+                CREATE TABLE IF NOT EXISTS h30533_security_valuation (
+                    snapshot_date TEXT NOT NULL, index_code TEXT NOT NULL, security_code TEXT NOT NULL,
+                    name TEXT, issuer_id TEXT, weight REAL, price REAL, currency TEXT,
+                    market_cap REAL, verified_shares REAL, profit_ttm REAL, earnings_yield REAL,
+                    index_pe REAL, pe REAL, financial_as_of TEXT, source_date TEXT,
+                    source_type TEXT, source TEXT, data_source TEXT, validity_reason TEXT,
+                    PRIMARY KEY (snapshot_date, index_code, security_code)
+                );
+            """)
+
+    @staticmethod
+    def _h30533_value(row, column):
+        value = row.get(column)
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=True, sort_keys=True)
+        return None if pd.isna(value) else value
+
+    def _save_h30533_table(self, conn, table, frame):
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for column in frame.columns:
+            if column not in existing and column.isidentifier():
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN [{column}] TEXT")
+        columns = list(frame.columns)
+        names = ", ".join(f"[{column}]" for column in columns)
+        placeholders = ",".join("?" for _ in columns)
+        conn.executemany(
+            f"INSERT OR REPLACE INTO {table} ({names}) VALUES ({placeholders})",
+            [tuple(self._h30533_value(row, column) for column in columns)
+             for _, row in frame.iterrows()],
+        )
+
+    @staticmethod
+    def _h30533_aliases(frame, aliases):
+        frame = frame.copy()
+        for canonical, alias in aliases.items():
+            if canonical not in frame and alias in frame:
+                frame[canonical] = frame[alias]
+        return frame
+
+    def save_h30533_snapshot(self, index_code, constituents, daily, securities):
+        if constituents.empty or daily.empty or securities.empty:
+            raise ValueError("H30533 snapshot parts must not be empty")
+        constituents = self._h30533_aliases(constituents, {"as_of": "constituent_as_of"})
+        daily = self._h30533_aliases(daily, {"pe_ratio": "index_pe", "stock_count": "valid_count"})
+        securities = self._h30533_aliases(securities, {"pe": "index_pe", "data_source": "source"})
+        frames = (constituents, daily, securities)
+        required = (("security_code", "weight", "source_type", "validity_reason"),
+                    ("trade_date", "source_type", "source_date", "validity_reason"),
+                    ("security_code", "weight", "source_type", "validity_reason"))
+        for frame, fields in zip(frames, required):
+            if "index_code" in frame and frame["index_code"].dropna().astype(str).ne(index_code).any():
+                raise ValueError("H30533 index_code mismatch")
+            if any(field not in frame.columns for field in fields if field != "validity_reason"):
+                raise ValueError("H30533 required metadata missing")
+        dates = {str(constituents["as_of"].dropna().iloc[0]), str(daily["trade_date"].dropna().iloc[0]),
+                 str(daily["source_date"].dropna().iloc[0]), str(securities["source_date"].dropna().iloc[0])}
+        sources = {str(frame["source_type"].dropna().iloc[0]) for frame in frames}
+        if len(dates) != 1 or len(sources) != 1:
+            raise ValueError("H30533 snapshot metadata mismatch")
+        constituents = constituents.copy()
+        daily = daily.copy()
+        securities = securities.copy()
+        frames = (constituents, daily, securities)
+        for frame in frames:
+            frame["index_code"] = index_code
+        for frame in frames:
+            if "validity_reason" not in frame:
+                frame["validity_reason"] = None
+        constituents["snapshot_date"] = constituents["as_of"]
+        constituents["constituent_as_of"] = constituents["as_of"]
+        securities["snapshot_date"] = securities["source_date"]
+        with self._conn() as conn:
+            for table in ("h30533_constituent_snapshot", "h30533_daily_valuation", "h30533_security_valuation"):
+                conn.execute(f"DELETE FROM {table} WHERE index_code=?", (index_code,))
+            self._save_h30533_table(conn, "h30533_constituent_snapshot", constituents)
+            self._save_h30533_table(conn, "h30533_daily_valuation", daily)
+            self._save_h30533_table(conn, "h30533_security_valuation", securities)
+
+    def load_h30533_snapshot(self, index_code):
+        with self._conn() as conn:
+            return {
+                key: pd.read_sql_query(
+                    f"SELECT * FROM {table} WHERE index_code=? ORDER BY {order}", conn, params=[index_code])
+                for key, table, order in (
+                    ("constituents", "h30533_constituent_snapshot", "snapshot_date, security_code"),
+                    ("daily", "h30533_daily_valuation", "trade_date"),
+                    ("securities", "h30533_security_valuation", "snapshot_date, security_code"),
+                )
+            }
+
+    def save_h30533_daily(self, index_code, df):
+        snapshot = self.load_h30533_snapshot(index_code)
+        self.save_h30533_snapshot(index_code, snapshot["constituents"], df, snapshot["securities"])
 
     def save_quotes(self, code: str, df: pd.DataFrame):
         """保存日K线数据"""

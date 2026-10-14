@@ -7,6 +7,7 @@ from typing import Dict, Optional
 from data_sources.us import USDataSource
 from cache.db import CacheDB
 from config import API_BATCH_DELAY, CHINA_INTL_STOCKS, US_REF_PE
+from data_sources.h30533 import H30533Source
 
 
 class USETL:
@@ -15,8 +16,9 @@ class USETL:
     def __init__(self, cache: Optional[CacheDB] = None):
         self.cache = cache or CacheDB()
         self.source = USDataSource()
-        self.index_code = "CHINA_INTL"
+        self.index_code = "H30533"
         self.index_name = "中概互联网"
+        self.h30533_source = H30533Source()
 
     def _get_hk_price(self, code: str) -> float:
         """从新浪获取港股实时价格"""
@@ -59,36 +61,48 @@ class USETL:
         if progress_cb:
             progress_cb("获取成分股列表...")
 
-        stocks = CHINA_INTL_STOCKS
-        total = len(stocks)
+        constituents = self.h30533_source.get_snapshot()
+        constituents = constituents.copy()
+        constituents["validity_reason"] = constituents.get("validity_reason", pd.Series(index=constituents.index))
+        total = len(constituents)
 
         if progress_cb:
             progress_cb(f"开始更新 {self.index_name}：{total} 只股票")
 
         results = []
-        for i, (code, name) in enumerate(stocks.items()):
+        valuation_rows = []
+        for i, constituent in constituents.iterrows():
+            code = constituent["security_code"]
+            name = constituent.get("name", "")
             if progress_cb and i % 5 == 0:
                 progress_cb(f"更新数据 [{i}/{total}]")
 
-            is_hk = code.endswith('.HK')
-            price = self._get_hk_price(code) if is_hk else self._get_us_price(code)
-            pe = None
-
-            if is_hk:
-                eps = self._get_hk_eps(code)
-                if eps and eps > 0 and price > 0:
-                    pe = round(price / eps, 2)
-            else:
-                # 美股用参考PE
-                pe = US_REF_PE.get(code)
-
-            if pe and pe > 0 and pe < 500:
-                results.append({
-                    "code": code,
-                    "name": name,
-                    "price": round(price, 2),
-                    "pe": pe,
-                })
+            record = self.source.get_current_pe(code) or {}
+            price = record.get("price")
+            market_cap = record.get("market_cap")
+            shares = record.get("verified_shares")
+            if market_cap is None and price is not None and shares is not None:
+                market_cap = float(price) * float(shares)
+            profit = record.get("profit_ttm")
+            pe = record.get("pe")
+            if pe is None and market_cap and profit and profit > 0:
+                pe = market_cap / profit
+            valid = bool(market_cap and profit and profit > 0 and pe and 0 < pe < 500)
+            valuation_rows.append({
+                "index_code": self.index_code, "security_code": code, "name": name,
+                "issuer_id": constituent.get("issuer_id"), "weight": constituent.get("weight"),
+                "price": price, "currency": record.get("currency"), "market_cap": market_cap,
+                "verified_shares": shares, "profit_ttm": profit,
+                "earnings_yield": (profit / market_cap) if valid else None,
+                "index_pe": pe if valid else None, "pe": pe if valid else None,
+                "financial_as_of": record.get("financial_as_of"),
+                "source_date": constituent.get("as_of"),
+                "source_type": constituent.get("source_type"),
+                "source": record.get("source"), "data_source": record.get("data_source", record.get("source")),
+                "validity_reason": record.get("validity_reason") or (None if valid else "missing or invalid valuation"),
+            })
+            if valid:
+                results.append(valuation_rows[-1])
             time.sleep(API_BATCH_DELAY)
 
         if not results:
@@ -98,24 +112,33 @@ class USETL:
         today = pd.Timestamp.today().strftime("%Y-%m-%d")
 
         # 市值加权PE = Σ(MV_i) / Σ(Profit_i)，MV_proxy = price²/pe
-        prices = df["price"].values
-        pes = df["pe"].values
-        mvs = (prices ** 2) / pes
+        mvs = df["market_cap"].astype(float).values
+        pes = df["pe"].astype(float).values
         total_mv = float(mvs.sum())
         total_profit = float(total_mv / (float((mvs * pes).sum() / total_mv)))
         index_pe = float((mvs * pes).sum() / total_mv)
 
         row = {
             "trade_date": today,
+            "index_code": self.index_code,
+            "index_pe": index_pe,
+            "earnings_yield": 1 / index_pe,
             "total_market_cap": round(total_mv, 6),
             "total_profit_ttm": round(total_profit, 6),
             "pe_ratio": index_pe,
-            "stock_count": len(df),
+            "stock_count": len(df), "valid_count": len(df),
+            "weight_coverage": float(sum(row.get("weight") or 0 for row in results)),
+            "negative_profit_count": sum(1 for row in valuation_rows if row.get("profit_ttm") is not None and row["profit_ttm"] < 0),
+            "missing_count": len(valuation_rows) - len(df),
+            "source_type": constituents.iloc[0].get("source_type"),
+            "source_date": constituents.iloc[0].get("as_of"),
+            "constituent_as_of": constituents.iloc[0].get("as_of"),
+            "constituent_basis": "H30533",
+            "validity_reason": None,
         }
         pe_df = pd.DataFrame([row])
 
-        self.cache.save_us_pe_snapshot(today, pe_df)
-        self.cache.save_us_stock_pe(today, df)
+        self.cache.save_h30533_snapshot(self.index_code, constituents, pe_df, pd.DataFrame(valuation_rows))
         self._recompute_us_stats()
 
         if progress_cb:
@@ -145,7 +168,8 @@ class USETL:
 
     def _recompute_us_stats(self):
         """重新计算并保存 US PE 统计指标"""
-        pe_df = self.cache.load_us_pe_daily()
+        snapshot = self.cache.load_h30533_snapshot(self.index_code)
+        pe_df = snapshot["daily"]
         if pe_df.empty:
             return
         pe_df = pe_df.copy().sort_values("trade_date").reset_index(drop=True)
@@ -158,9 +182,7 @@ class USETL:
         pe_df["pe_percentile"] = pe_df["pe_ratio"].apply(
             lambda x: np.searchsorted(sorted_pe, x, side="left") / len(sorted_pe) * 100
         )
-        self.cache.save_us_pe_daily(pe_df)
-        stats_cols = ["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]
-        self.cache.save_us_pe_stats(pe_df[stats_cols])
+        self.cache.save_h30533_daily(self.index_code, pe_df)
 
     def run_historical(self, progress_cb=None) -> pd.DataFrame:
         """构建历史 PE 序列（港股用历史EPS，美股用固定参考PE）"""
