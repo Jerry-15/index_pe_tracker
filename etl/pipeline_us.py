@@ -45,19 +45,24 @@ class USETL:
         df = pd.DataFrame(results)
         today = pd.Timestamp.today().strftime("%Y-%m-%d")
 
-        # 计算指数 PE：市值加权平均 PE
+        # 计算指数 PE：市值加权 PE（与历史口径一致）
         valid = df[df["pe"].notna() & (df["pe"] > 0) & (df["pe"] < 200)]
         if len(valid) > 0:
             prices = valid["price"].values
             pes = valid["pe"].values
-            mvs = (prices ** 2) / pes
+            mvs = (prices ** 2) / pes          # 市值代理（USD）
             index_pe = float((mvs * pes).sum() / mvs.sum())
+            total_mv = float(mvs.sum())
+            total_profit = float(total_mv / index_pe)
         else:
+            total_mv = 0.0
+            total_profit = 0.0
             index_pe = None
 
         row = {
             "trade_date": today,
-            "total_market_cap": float(df["price"].sum()),
+            "total_market_cap": round(total_mv, 6),
+            "total_profit_ttm": round(total_profit, 6),
             "pe_ratio": index_pe,
             "stock_count": len(valid),
         }
@@ -187,11 +192,16 @@ class USETL:
                     count += 1
 
             if count > 0 and mv_sum > 0:
+                # 指数 PE = 总市值 / 总利润（各股市值代理之和 / 各股利润代理之和）
+                # MV_proxy = price²/pe  (USD)，Profit_proxy = MV/pe = price×(price/pe)/pe
+                # 但 price/pe = EPS_USD，所以 Profit_proxy = price × EPS_USD / pe = EPS_USD²
+                # 为得到一致口径，用各股 MV_proxy 求和作为总市值代理，利润代理 = MV_proxy / pe_i 求和
                 index_pe = pe_sum / mv_sum
-                rate = self.source._get_fx_rate()
+                total_profit = mv_sum / index_pe  # 反推总利润（USD）
                 results.append({
                     "trade_date": date,
-                    "total_market_cap": mv_sum * rate,
+                    "total_market_cap": round(mv_sum, 6),   # USD 市值代理
+                    "total_profit_ttm": round(total_profit, 6),  # USD 利润代理
                     "pe_ratio": index_pe,
                     "stock_count": count,
                 })

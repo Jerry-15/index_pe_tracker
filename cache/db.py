@@ -98,6 +98,7 @@ class CacheDB:
                     trade_date TEXT NOT NULL,
                     pe_ratio REAL,
                     total_market_cap REAL,
+                    total_profit_ttm REAL,
                     stock_count INTEGER,
                     updated_at REAL,
                     PRIMARY KEY (trade_date)
@@ -345,11 +346,12 @@ class CacheDB:
                     row["trade_date"],
                     row.get("pe_ratio"),
                     row.get("total_market_cap"),
+                    row.get("total_profit_ttm"),
                     row.get("stock_count"),
                     time.time(),
                 ))
             conn.executemany(
-                "INSERT INTO us_pe_daily VALUES (?,?,?,?,?)", records
+                "INSERT INTO us_pe_daily VALUES (?,?,?,?,?,?)", records
             )
 
     def load_us_pe_daily(self) -> pd.DataFrame:
@@ -371,11 +373,12 @@ class CacheDB:
                     row["trade_date"],
                     row.get("pe_ratio"),
                     row.get("total_market_cap"),
+                    row.get("total_profit_ttm"),
                     row.get("stock_count"),
                     time.time(),
                 ))
             conn.executemany(
-                "INSERT INTO us_pe_daily VALUES (?,?,?,?,?)", records
+                "INSERT INTO us_pe_daily VALUES (?,?,?,?,?,?)", records
             )
 
     def load_us_pe_snapshot(self) -> pd.DataFrame:
