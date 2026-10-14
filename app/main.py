@@ -212,14 +212,24 @@ def run_us_update(us_etl, progress_container):
 def _render_china_intl(us_etl):
     """渲染 H30533 估值页面。"""
     st.markdown("### 🌏 中证海外中国互联网50（H30533）PE(TTM)")
-    st.caption("美股上市中国互联网公司 · 基于 EPS_TTM 计算 · 汇率：USD/CNY")
+    st.caption("按 H30533 成分快照计算 · 财务口径随数据源披露日期变化")
 
     result = us_etl.load_result()
     pe_df = result["pe_data"]
     stock_pe = result["stock_pe"]
+    latest = pe_df.iloc[-1] if pe_df is not None and not pe_df.empty else None
+    financial_as_of = latest.get("financial_as_of") if latest is not None else None
+    if financial_as_of is None and stock_pe is not None and not stock_pe.empty and "financial_as_of" in stock_pe:
+        dates = stock_pe["financial_as_of"].dropna().astype(str)
+        financial_as_of = dates.max() if not dates.empty else None
+    validity_reason = latest.get("validity_reason") if latest is not None else "H30533 snapshot is unavailable"
+    if latest is not None and (pd.isna(validity_reason) or not validity_reason):
+        validity_reason = None
+    if latest is None or latest.get("pe_ratio") is None or validity_reason:
+        st.warning(f"H30533 当前估值不可用：{validity_reason or '缺少有效估值'}")
+    st.caption(f"财务截至：{financial_as_of or '--'}")
 
     if pe_df is not None and not pe_df.empty:
-        latest = pe_df.iloc[-1]
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("当前 PE(TTM)", f"{latest['pe_ratio']:.2f}" if pd.notna(latest.get('pe_ratio')) else "--")
         if "pe_mean" in pe_df.columns and pd.notna(latest.get("pe_mean")):
@@ -263,10 +273,13 @@ def _render_china_intl(us_etl):
 
         with tab2:
             if stock_pe is not None and not stock_pe.empty:
-                show_cols = ["code", "name", "price", "pe", "pb"]
+                show_cols = ["code", "name", "price", "pe", "pb", "financial_as_of", "validity_reason"]
                 avail = [c for c in show_cols if c in stock_pe.columns]
                 pe_show = stock_pe[avail].copy()
-                pe_show.columns = ["代码", "名称", "最新价(USD)", "PE(TTM)", "PB"]
+                pe_show = pe_show.rename(columns={
+                    "code": "代码", "name": "名称", "price": "最新价", "pe": "PE(TTM)",
+                    "pb": "PB", "financial_as_of": "财务截至", "validity_reason": "有效性说明",
+                })
                 pe_show = pe_show.sort_values("PE(TTM)")
                 st.dataframe(pe_show, use_container_width=True, height=500)
             else:
@@ -274,22 +287,21 @@ def _render_china_intl(us_etl):
 
         with tab3:
             st.markdown("""
-            - **指数成分**：23 家美股上市的中国互联网公司（阿里巴巴、拼多多、京东、百度、网易等）
-            - **计算口径**：`PE = 股价(USD) / (EPS_TTM(CNY) / USD_CNY汇率)`
-            - **数据源**：akshare `stock_us_daily`（新浪）+ `stock_financial_us_analysis_indicator_em`（东方财富）
-            - **汇率**：中国银行中间价，每日自动获取（默认 7.1771）
-            - ⚠️ **注意**：此为简单加权平均 PE，非市值加权，仅供参考；部分公司 EPS_TTM 为年/半年数据，非严格 TTM
-            - 💡 **使用方法**：在左侧选择「中证海外中国互联网50（H30533）」后点击「更新数据」
+            - **指数成分**：以当前 H30533 成分快照为准，成分日期见上方元数据
+            - **估值口径**：指数与个股估值均展示对应快照的有效性状态
+            - **财务口径**：个股财务截至日期在成分股快照中逐项展示，指数卡片展示可用的最新聚合日期
+            - **来源元数据**：行情、财务、成分日期和覆盖率均来自已保存的 H30533 快照
+            - ⚠️ **注意**：有效性说明、覆盖率和来源日期应与估值数值一起解读
+            - 💡 **使用方法**：在左侧选择 H30533 后点击「更新数据」
             """)
     else:
-        st.info("暂无 H30533 数据，请点击左侧「更新数据」开始拉取。")
+        st.info("暂无 H30533 快照，请点击左侧「更新数据」开始拉取。")
         st.markdown("""
         **首次运行说明：**
-        1. 系统将从新浪财经获取各成分股的历史日K线和财务指标
-        2. 预计需要 **2-3 分钟**（23 只股票，逐只请求）
-        3. 数据将缓存在本地 SQLite 数据库中
-        4. 计算逻辑：`PE = 股价(USD) / (EPS_TTM(CNY) / 汇率)`
-        5. ⚠️ 汇率采用中国银行中间价，每日更新
+        1. 系统将获取 H30533 成分快照及其行情、财务数据
+        2. 数据将缓存在本地 SQLite 数据库中
+        3. 页面会同时展示成分日期、财务截至日期、来源日期和有效性说明
+        4. ⚠️ 若快照为空或覆盖不足，页面会明确标记为不可用，不使用其他指数数据替代
         """)
 
     etl = get_etl()

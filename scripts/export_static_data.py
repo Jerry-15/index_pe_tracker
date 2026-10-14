@@ -95,14 +95,9 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
     pe_df = snapshot["daily"]
     constituents = snapshot["constituents"]
     securities = snapshot["securities"]
+    unavailable_reason = None
     if pe_df.empty:
-        # Keep the committed legacy artifact usable until the first H30533 snapshot
-        # is written, without deleting its existing manifest entry.
-        pe_df = cache.load_us_pe_daily()
-        if pe_df.empty:
-            return
-        constituents = pd.DataFrame()
-        securities = pd.DataFrame()
+        unavailable_reason = "H30533 snapshot is unavailable; no H30533 daily valuation rows"
     # 合并统计指标
     try:
         stats_df = cache.load_us_pe_stats()
@@ -113,10 +108,15 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
             )
     except Exception:
         pass
-    latest_row = pe_df.iloc[-1]
-    rows = _to_rows(pe_df, h30533=True)
+    latest_row = pe_df.iloc[-1] if not pe_df.empty else pd.Series(dtype=object)
+    rows = _to_rows(pe_df, h30533=True) if not pe_df.empty else []
     code = "CHINA_INTL"
     _save(code, rows)
+
+    financial_as_of = _text(latest_row.get("financial_as_of"))
+    if financial_as_of is None and not securities.empty and "financial_as_of" in securities:
+        dates = securities["financial_as_of"].dropna().astype(str)
+        financial_as_of = dates.max() if not dates.empty else None
 
     # 更新 index_list
     try:
@@ -129,11 +129,12 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
         entry = {
             "code": "H30533", "name": "中证海外中国互联网50（H30533）", "type": "h30533",
             "pe_ref": None, "data_file": f"{code}.json",
-            "last_updated": str(latest_row.get("trade_date", "")),
+            "last_updated": _text(latest_row.get("trade_date")),
             "source_type": _text(latest_row.get("source_type")),
             "source_date": _text(latest_row.get("source_date")),
             "constituent_as_of": _text(latest_row.get("constituent_as_of")),
             "constituent_basis": _text(latest_row.get("constituent_basis")),
+            "financial_as_of": financial_as_of,
             "coverage": _number(latest_row.get("weight_coverage")),
             "counts": {
                 "constituents": len(constituents),
@@ -141,9 +142,9 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
                 "negative_profit": _number(latest_row.get("negative_profit_count")) or 0,
                 "missing": _number(latest_row.get("missing_count")) or 0,
             },
-            "validity_reason": _text(latest_row.get("validity_reason")),
+            "validity_reason": unavailable_reason or _text(latest_row.get("validity_reason")),
             "stock_diagnostics": _records(securities),
-            "unavailable": _number(latest_row.get("pe_ratio")) is None,
+            "unavailable": unavailable_reason is not None or _number(latest_row.get("pe_ratio")) is None,
         }
         existing_index = next(
             (n for n, item in enumerate(idx_list)
@@ -191,8 +192,8 @@ def _to_rows(pe_df: pd.DataFrame, h30533: bool = False) -> list:
                         _number(r.get("negative_profit_count")),
                         _number(r.get("missing_count")),
                         _text(r.get("source_type")), _text(r.get("source_date")),
-                        _text(r.get("constituent_as_of")), _text(r.get("constituent_basis")),
-                        _text(r.get("validity_reason"))])
+                         _text(r.get("constituent_as_of")), _text(r.get("constituent_basis")),
+                         _text(r.get("validity_reason")), _text(r.get("financial_as_of"))])
         else:
             row.extend([_number(r.get("valid_stock_count")),
                         _number(r.get("profitable_stock_count")),

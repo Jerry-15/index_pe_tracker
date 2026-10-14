@@ -39,7 +39,7 @@
 <body>
 <div class="header">
   <h1>📊 板块指数估值追踪器</h1>
-  <p>自下而上计算 PE(TTM) · 数据来源：A股（新浪财经）/ 申万指数 / 美股（Sina行情 + 东方财富财务指标）· 汇率：中行中间价 · 仅供研究参考</p>
+  <p>自下而上计算 PE(TTM) · 展示指数、行业与 H30533 快照元数据 · 仅供研究参考</p>
 </div>
 
 <div class="container">
@@ -75,7 +75,7 @@
 </div>
 
 <div class="footer">
-  板块指数估值追踪器 · MIT License · A股/申万：新浪财经；美股：Sina行情 + 东方财富财务指标；汇率：中国银行中间价
+  板块指数估值追踪器 · MIT License · 数据来源及有效性以各快照元数据为准
 </div>
 
 <script>
@@ -191,6 +191,27 @@ function renderCards(meta, rows) {
   `;
 }
 
+function clearRenderedState() {
+  document.getElementById('cards').innerHTML = '';
+  document.getElementById('chartStockPE').innerHTML = '';
+  Object.values(charts).forEach(chart => chart.clear());
+}
+
+function renderValidity(meta, rows) {
+  const coverage = document.getElementById('coverage');
+  if (!meta || meta.type !== 'h30533') return;
+  const details = [];
+  if (meta.unavailable || meta.validity_reason) {
+    details.push(`当前不可用：${meta.validity_reason || '有效覆盖不足'}`);
+  }
+  details.push(`财务截至：${meta.financial_as_of || '--'}`);
+  if (!rows.length) details.push('暂无可绘制的 H30533 日估值行');
+  const warning = meta.unavailable || meta.validity_reason || !rows.length;
+  coverage.innerHTML += warning
+    ? ` · <span class="error">${details.join(' · ')}</span>`
+    : ` · ${details.join(' · ')}`;
+}
+
 function buildMainOption(meta, rows) {
   const dates = rows.map(r => fmtDate(r[0]));
   const pe = rows.map(r => r[1]);
@@ -271,6 +292,7 @@ async function render(code) {
   currentCode = code;
   const meta = indexList.find(i => i.code === code);
   const isUS = meta && meta.type === 'h30533';
+  clearRenderedState();
 
   document.getElementById('coverage').textContent = isUS ?
     `来源：${meta.source_type || '未知'} · 来源日期：${meta.source_date || '--'} · 成分日期：${meta.constituent_as_of || '--'} · 覆盖：${meta.coverage == null ? '--' : (meta.coverage * 100).toFixed(1) + '%'}` :
@@ -283,6 +305,7 @@ async function render(code) {
   let rows;
   try { rows = await fetchJSON(url); }
   catch (e) { showError(`无法加载 ${url}：${e.message}`); return; }
+  renderValidity(meta, rows);
   if (!rows.length) return;
 
   // 渲染个股 PE 快照
@@ -291,9 +314,6 @@ async function render(code) {
   }
 
   renderCards(meta, rows);
-  if (isUS && (meta.unavailable || meta.validity_reason)) {
-    document.getElementById('coverage').textContent += ` · 当前不可用：${meta.validity_reason || '有效覆盖不足'}`;
-  }
   charts.main.setOption(buildMainOption(meta, rows), true);
   charts.pct.setOption(buildPctOption(rows), true);
   charts.fund.setOption(buildFundOption(rows), true);
