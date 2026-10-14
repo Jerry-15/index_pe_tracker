@@ -4,6 +4,7 @@ import pandas as pd
 import requests
 
 from data_sources.h30533 import H30533Source, H30533SourceError
+from data_sources.us import USDataSource
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
 
 
@@ -252,6 +253,61 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(source.normalize_code("00700", "HK"), "00700.HK")
         self.assertEqual(source.normalize_code("600000", "SH"), "600000.SH")
         self.assertEqual(source.normalize_code("BABA", "US"), "BABA")
+
+    def test_duplicate_issuer_fixture_keeps_official_line_once(self):
+        source = H30533Source()
+        result = source.parse_official({
+            "data": {
+                "indexCode": CHINA_INTL_INDEX_CODE,
+                "asOfDate": "2026-10-13",
+                "constituents": [
+                    {"code": "09988", "name": "Alibaba HK", "exchange": "HK",
+                     "weight": 4, "issuer_id": "ALIBABA", "security_type": "ordinary"},
+                    {"code": "BABA", "name": "Alibaba ADR", "exchange": "US",
+                     "weight": 3, "issuer_id": "ALIBABA", "security_type": "adr",
+                     "ads_ratio": 8},
+                    {"code": "09988", "name": "Alibaba HK", "exchange": "HK",
+                     "weight": 4, "issuer_id": "ALIBABA", "security_type": "ordinary"},
+                ],
+            }
+        })
+
+        self.assertEqual(result["security_code"].tolist(), ["09988.HK", "BABA"])
+        self.assertEqual(result["issuer_id"].tolist(), ["ALIBABA", "ALIBABA"])
+        self.assertEqual(result["weight"].tolist(), [0.04, 0.03])
+        self.assertTrue(pd.isna(result.iloc[0]["ads_ratio"]))
+        self.assertEqual(result.iloc[1]["ads_ratio"], 8)
+        self.assertEqual(result["is_duplicate_issuer"].tolist(), [False, True])
+        self.assertEqual(source.deduplicate_issuers(result)["security_code"].tolist(), ["09988.HK"])
+
+    def test_identity_is_not_inferred_from_similar_names(self):
+        source = H30533Source()
+        result = source.parse_official({
+            "data": {
+                "indexCode": CHINA_INTL_INDEX_CODE,
+                "asOfDate": "2026-10-13",
+                "constituents": [
+                    {"code": "09988", "name": "Alibaba", "exchange": "HK", "weight": 4},
+                    {"code": "BABA", "name": "Alibaba", "exchange": "US", "weight": 3},
+                ],
+            }
+        })
+
+        self.assertTrue(result["issuer_id"].isna().all())
+        self.assertFalse(result["is_duplicate_issuer"].any())
+
+    def test_common_input_reports_missing_shares_and_profit_without_zero(self):
+        source = USDataSource()
+        record = source.build_input_record(
+            "BABA", price=80, currency="USD", shares_or_market_cap=None,
+            profit_ttm=None, financial_as_of=None, source="fixture",
+        )
+
+        self.assertEqual(record["price"], 80)
+        self.assertIsNone(record["shares_or_market_cap"])
+        self.assertIsNone(record["profit_ttm"])
+        self.assertIn("shares_or_market_cap", record["validity_reason"])
+        self.assertIn("profit_ttm", record["validity_reason"])
 
 
 if __name__ == "__main__":

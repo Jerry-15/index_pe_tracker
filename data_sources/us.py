@@ -3,7 +3,7 @@ import time
 import requests
 import akshare as ak
 import pandas as pd
-from typing import Optional
+from typing import Any, Optional
 from config import API_RETRY_TIMES, API_RETRY_DELAY
 
 
@@ -21,6 +21,37 @@ class USDataSource:
     def __init__(self):
         self._fx_rate: Optional[float] = None
         self._fx_cached_at: float = 0
+
+    @staticmethod
+    def build_input_record(
+        code: str,
+        price: Optional[float],
+        currency: Optional[str],
+        shares_or_market_cap: Optional[float],
+        profit_ttm: Optional[float],
+        financial_as_of: Optional[str],
+        source: str,
+        ads_ratio: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Build a common quote/financial record without sentinel zeros."""
+        missing = []
+        if shares_or_market_cap is None:
+            missing.append("shares_or_market_cap")
+        if profit_ttm is None:
+            missing.append("profit_ttm")
+        if financial_as_of is None:
+            missing.append("financial_as_of")
+        return {
+            "code": code,
+            "price": price,
+            "currency": currency,
+            "shares_or_market_cap": shares_or_market_cap,
+            "profit_ttm": profit_ttm,
+            "financial_as_of": financial_as_of,
+            "source": source,
+            "ads_ratio": ads_ratio,
+            "validity_reason": "; ".join(f"missing {field}" for field in missing) or None,
+        }
 
     def _get_fx_rate(self) -> float:
         """获取最新 USD/CNY 中间价"""

@@ -50,7 +50,8 @@ class H30533Source:
     )
     REQUIRED_COLUMNS = [
         "index_code", "security_code", "name", "exchange", "weight",
-        "as_of", "source_type", "raw_metadata",
+        "as_of", "source_type", "issuer_id", "security_type", "ads_ratio",
+        "is_duplicate_issuer", "raw_metadata",
     ]
     COLUMNS = REQUIRED_COLUMNS
 
@@ -151,6 +152,7 @@ class H30533Source:
         as_of = self._normalize_date(as_of)
         rows = self._find_source_rows(payload, source_type)
         normalized = []
+        seen_security_codes = set()
         for raw in rows:
             try:
                 code = self._find_value(
@@ -171,19 +173,47 @@ class H30533Source:
                     raise ValueError(f"invalid weight: {exc}") from exc
                 if not 0 <= weight <= 1:
                     raise ValueError("weight out of range")
+                security_code = self.normalize_code(code, exchange)
+                if security_code in seen_security_codes:
+                    self.rejected_rows.append({"row": raw, "reason": "duplicate security code"})
+                    continue
+                seen_security_codes.add(security_code)
                 normalized.append({
                     "index_code": CHINA_INTL_INDEX_CODE,
-                    "security_code": self.normalize_code(code, exchange),
+                    "security_code": security_code,
                     "name": str(name or "").strip(),
                     "exchange": str(exchange or "").strip().upper(),
                     "weight": weight,
                     "as_of": as_of,
                     "source_type": source_type,
+                    "issuer_id": H30533Source._optional_text(
+                        raw, "issuer_id", "issuerId", "issuerCode", "issuer_code"
+                    ),
+                    "security_type": H30533Source._optional_text(
+                        raw, "security_type", "securityType", "instrumentType"
+                    ),
+                    "ads_ratio": H30533Source._optional_number(raw, "ads_ratio", "adsRatio"),
+                    "is_duplicate_issuer": False,
                     "raw_metadata": dict(raw),
                 })
             except (TypeError, ValueError) as exc:
                 self.rejected_rows.append({"row": raw, "reason": str(exc)})
-        return pd.DataFrame(normalized, columns=self.REQUIRED_COLUMNS)
+        result = pd.DataFrame(normalized, columns=self.REQUIRED_COLUMNS)
+        known_issuers = set()
+        for index, row in result.iterrows():
+            issuer_id = row["issuer_id"]
+            if pd.notna(issuer_id) and issuer_id in known_issuers:
+                result.at[index, "is_duplicate_issuer"] = True
+            elif pd.notna(issuer_id):
+                known_issuers.add(issuer_id)
+        return result
+
+    @staticmethod
+    def deduplicate_issuers(snapshot: pd.DataFrame) -> pd.DataFrame:
+        """Return one official security per explicitly identified issuer."""
+        if snapshot.empty:
+            return snapshot.copy()
+        return snapshot.loc[~snapshot["is_duplicate_issuer"]].copy().reset_index(drop=True)
 
     @staticmethod
     def _validate_index_identity(payload: Any, source_type: str) -> None:
@@ -270,6 +300,22 @@ class H30533Source:
             if key in value and value[key] not in (None, ""):
                 return value[key]
         return None
+
+    @staticmethod
+    def _optional_text(value: Mapping[str, Any], *keys: str) -> Optional[str]:
+        found = H30533Source._find_value(value, *keys)
+        return str(found).strip() if found is not None else None
+
+    @staticmethod
+    def _optional_number(value: Mapping[str, Any], *keys: str) -> Optional[float]:
+        found = H30533Source._find_value(value, *keys)
+        if found is None:
+            return None
+        try:
+            number = float(found)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid numeric metadata: {found}") from exc
+        return int(number) if number.is_integer() else number
 
     @staticmethod
     def _normalize_date(value: Any) -> str:
