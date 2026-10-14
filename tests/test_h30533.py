@@ -215,6 +215,42 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
         self.assertEqual(calls, [{"indexCode": CHINA_INTL_INDEX_CODE}, {"fundCode": CHINA_INTL_FUND_CODE}])
 
+    def test_get_snapshot_falls_back_after_official_wrong_index_payload(self):
+        official_payload = {
+            "data": {
+                "indexCode": "000300",
+                "asOfDate": "2026-10-13",
+                "constituents": [],
+            }
+        }
+        etf_payload = {
+            "fundCode": CHINA_INTL_FUND_CODE,
+            "as_of": "2026-10-10",
+            "holdings": [
+                {"code": "00700", "name": "Tencent", "market": "HK", "weight_pct": 7.1},
+            ],
+        }
+        calls = []
+
+        def fetcher(url, params):
+            calls.append((url, params))
+            return official_payload if params.get("indexCode") else etf_payload
+
+        source = H30533Source(
+            fetcher=fetcher,
+            retries=2,
+            official_url="https://official.test",
+            etf_url="https://etf.test",
+        )
+
+        result = source.get_snapshot()
+
+        self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
+        self.assertEqual(calls, [
+            ("https://official.test", {"indexCode": CHINA_INTL_INDEX_CODE}),
+            ("https://etf.test", {"fundCode": CHINA_INTL_FUND_CODE}),
+        ])
+
     def test_normalize_code_handles_exchange_and_preserves_us_symbols(self):
         source = H30533Source()
 
@@ -254,6 +290,7 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "all_sources_rejected")
         self.assertEqual(calls, [{"indexCode": CHINA_INTL_INDEX_CODE}, {"fundCode": CHINA_INTL_FUND_CODE}])
         self.assertEqual(raised.exception.details["errors"][0]["code"], "wrong_index")
+        self.assertEqual(raised.exception.details["errors"][1]["code"], "missing_fund_identity")
 
     def test_urls_are_injected_and_environment_is_read_per_instance(self):
         first = H30533Source(official_url="https://one", etf_url="https://two")
@@ -268,6 +305,30 @@ class H30533SourceTests(unittest.TestCase):
 
         self.assertEqual(second.official_url, "https://env-one")
         self.assertEqual(second.etf_url, "https://env-two")
+
+    def test_constructor_urls_are_passed_to_fetcher(self):
+        calls = []
+
+        def fetcher(url, params):
+            calls.append(url)
+            if params.get("indexCode"):
+                return {"data": {"indexCode": "000300"}}
+            return {
+                "fundCode": CHINA_INTL_FUND_CODE,
+                "as_of": "2026-10-10",
+                "holdings": [{"code": "00700", "name": "Tencent", "market": "HK", "weight_pct": 7.1}],
+            }
+
+        source = H30533Source(
+            fetcher=fetcher,
+            retries=0,
+            official_url="https://injected-official.test",
+            etf_url="https://injected-etf.test",
+        )
+
+        source.get_snapshot()
+
+        self.assertEqual(calls, ["https://injected-official.test", "https://injected-etf.test"])
 
 
 if __name__ == "__main__":
