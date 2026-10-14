@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import time
+import math
 from typing import Any, Callable, Mapping, Optional
 
 import pandas as pd
@@ -44,7 +45,8 @@ class H30533Source:
     DEFAULT_ETF_URL = "https://www.efunds.com.cn/etrade/fund/513050/holdings"
     REQUIRED_COLUMNS = [
         "index_code", "security_code", "name", "exchange", "weight",
-        "as_of", "source_type", "raw_metadata",
+        "as_of", "source_type", "issuer_id", "security_type", "ads_ratio",
+        "is_duplicate_issuer", "raw_metadata",
     ]
     COLUMNS = REQUIRED_COLUMNS
 
@@ -81,7 +83,7 @@ class H30533Source:
                     result = parser(self.fetcher(url, params))
                     if result.empty:
                         raise H30533SourceError("source returned no valid constituent rows", "empty_snapshot")
-                    return result
+                    return self.deduplicate_issuers(result)
                 except H30533SourceError as exc:
                     errors.append({"source_type": source_type, "code": exc.code, "message": str(exc)})
                     if attempt < self.retries and exc.code == "transport_error":
@@ -178,11 +180,37 @@ class H30533Source:
                     "weight": weight,
                     "as_of": as_of,
                     "source_type": source_type,
+                    "issuer_id": self._optional_text(raw, "issuer_id", "issuerId", "issuerCode", "issuer_code", uppercase=True),
+                    "security_type": self._optional_text(raw, "security_type", "securityType", "instrumentType"),
+                    "ads_ratio": self._optional_number(raw, "ads_ratio", "adsRatio"),
+                    "is_duplicate_issuer": False,
                     "raw_metadata": dict(raw),
                 })
             except (TypeError, ValueError) as exc:
                 self.rejected_rows.append({"row": raw, "reason": str(exc)})
-        return pd.DataFrame(normalized, columns=self.REQUIRED_COLUMNS)
+        result = pd.DataFrame(normalized, columns=self.REQUIRED_COLUMNS)
+        known_issuers = set()
+        for index, row in result.iterrows():
+            issuer_id = row["issuer_id"]
+            if pd.notna(issuer_id) and issuer_id in known_issuers:
+                result.at[index, "is_duplicate_issuer"] = True
+            elif pd.notna(issuer_id):
+                known_issuers.add(issuer_id)
+        return result
+
+    @staticmethod
+    def deduplicate_issuers(snapshot: pd.DataFrame) -> pd.DataFrame:
+        """Keep all unidentified rows and one preferred row per identified issuer."""
+        if snapshot.empty:
+            return snapshot.copy()
+        selected = []
+        for issuer_id, group in snapshot.groupby("issuer_id", dropna=False, sort=False):
+            if pd.isna(issuer_id):
+                selected.extend(group.index)
+                continue
+            ordinary = group[group["security_type"].fillna("").str.lower().eq("ordinary")]
+            selected.append((ordinary if not ordinary.empty else group).index[0])
+        return snapshot.loc[selected].copy().reset_index(drop=True)
 
     @staticmethod
     def _validate_index_identity(payload: Any, source_type: str) -> None:
@@ -193,7 +221,7 @@ class H30533Source:
             "index_code" if source_type == "csi_official" else "fund_code",
             "indexId" if source_type == "csi_official" else "fundId",
         )
-        if identity is None:
+        if H30533Source._is_missing(identity):
             raise H30533SourceError(
                 f"{source_type} response does not identify its {('index' if source_type == 'csi_official' else 'fund')}",
                 "missing_index_identity" if source_type == "csi_official" else "missing_fund_identity",
@@ -252,9 +280,41 @@ class H30533Source:
         if not isinstance(value, Mapping):
             return None
         for key in keys:
-            if key in value and value[key] not in (None, ""):
+            if key in value and not H30533Source._is_missing(value[key]):
                 return value[key]
         return None
+
+    @staticmethod
+    def _is_missing(value: Any) -> bool:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return True
+        try:
+            return bool(pd.isna(value))
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _optional_text(value: Mapping[str, Any], *keys: str, uppercase: bool = False) -> Optional[str]:
+        found = H30533Source._find_value(value, *keys)
+        if H30533Source._is_missing(found):
+            return None
+        text = str(found).strip()
+        return text.upper() if uppercase else text
+
+    @staticmethod
+    def _optional_number(value: Mapping[str, Any], *keys: str) -> Optional[float]:
+        found = next((value[key] for key in keys if key in value), None)
+        if H30533Source._is_missing(found):
+            if found is None:
+                return None
+            raise ValueError(f"invalid ads ratio: {found}")
+        try:
+            number = float(found)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid ads ratio: {found}") from exc
+        if not math.isfinite(number) or number <= 0:
+            raise ValueError(f"invalid ads ratio: {found}")
+        return int(number) if number.is_integer() else number
 
     @staticmethod
     def _normalize_date(value: Any) -> str:

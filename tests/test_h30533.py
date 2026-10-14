@@ -4,6 +4,7 @@ from unittest import mock
 import pandas as pd
 
 from data_sources.h30533 import H30533Source, H30533SourceError
+from data_sources.us import USDataSource
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
 
 
@@ -329,6 +330,103 @@ class H30533SourceTests(unittest.TestCase):
         source.get_snapshot()
 
         self.assertEqual(calls, ["https://injected-official.test", "https://injected-etf.test"])
+
+    def test_issuer_identity_is_canonicalized_and_blank_source_identity_is_missing(self):
+        source = H30533Source()
+        result = source.parse_official({
+            "data": {
+                "indexCode": " h30533 ",
+                "asOfDate": "2026-10-13",
+                "constituents": [
+                    {"code": "09988", "name": "Alibaba", "exchange": "HK", "weight": 4,
+                     "issuer_id": "  AliBaba  "},
+                ],
+            }
+        })
+
+        self.assertEqual(result.iloc[0]["issuer_id"], "ALIBABA")
+
+        with self.assertRaises(H30533SourceError) as raised:
+            source.parse_official({
+                "data": {"indexCode": "   ", "asOfDate": "2026-10-13", "constituents": []}
+            })
+        self.assertEqual(raised.exception.code, "missing_index_identity")
+
+    def test_blank_issuer_identity_does_not_create_duplicate(self):
+        source = H30533Source()
+        result = source.parse_official({
+            "data": {
+                "indexCode": CHINA_INTL_INDEX_CODE,
+                "asOfDate": "2026-10-13",
+                "constituents": [
+                    {"code": "09988", "name": "Alibaba", "exchange": "HK", "weight": 4,
+                     "issuer_id": "   "},
+                    {"code": "BABA", "name": "Alibaba ADR", "exchange": "US", "weight": 3},
+                ],
+            }
+        })
+
+        self.assertTrue(result["issuer_id"].isna().all())
+        self.assertFalse(result["is_duplicate_issuer"].any())
+
+    def test_invalid_ads_ratio_is_rejected(self):
+        source = H30533Source()
+        result = source.parse_official({
+            "data": {
+                "indexCode": CHINA_INTL_INDEX_CODE,
+                "asOfDate": "2026-10-13",
+                "constituents": [
+                    {"code": "BABA", "name": "Alibaba", "exchange": "US", "weight": 4,
+                     "ads_ratio": 0},
+                    {"code": "PDD", "name": "PDD", "exchange": "US", "weight": 3,
+                     "ads_ratio": float("nan")},
+                ],
+            }
+        })
+
+        self.assertTrue(result.empty)
+        self.assertEqual(len(source.rejected_rows), 2)
+        self.assertTrue(all("ads ratio" in item["reason"] for item in source.rejected_rows))
+
+    def test_snapshot_deduplicates_and_prefers_ordinary_security(self):
+        source = H30533Source()
+        source.fetcher = lambda url, params: {
+            "data": {
+                "indexCode": CHINA_INTL_INDEX_CODE,
+                "asOfDate": "2026-10-13",
+                "constituents": [
+                    {"code": "BABA", "name": "Alibaba ADR", "exchange": "US", "weight": 3,
+                     "issuer_id": "alibaba", "security_type": "ADR", "ads_ratio": 8},
+                    {"code": "09988", "name": "Alibaba", "exchange": "HK", "weight": 4,
+                     "issuer_id": " ALIBABA ", "security_type": "ordinary"},
+                ],
+            }
+        }
+
+        result = source.get_snapshot()
+
+        self.assertEqual(result["security_code"].tolist(), ["09988.HK"])
+        self.assertEqual(result["weight"].tolist(), [0.04])
+        self.assertEqual(result.iloc[0]["security_type"], "ordinary")
+
+    def test_common_input_defaults_ads_ratio_and_reports_all_missing_values(self):
+        record = USDataSource.build_input_record(
+            " BABA ", price=float("nan"), currency=pd.NA,
+            shares_or_market_cap=pd.NA, profit_ttm="", financial_as_of=None,
+            source="",
+        )
+
+        self.assertEqual(record["ads_ratio"], USDataSource.ADS_RATIO["BABA"])
+        self.assertEqual(record["validity_reason"],
+                         "missing price; missing currency; missing shares_or_market_cap; "
+                         "missing profit_ttm; missing financial_as_of; missing source")
+
+    def test_common_input_rejects_non_positive_or_non_finite_ads_ratio(self):
+        for ratio in (0, -1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                USDataSource.build_input_record(
+                    "PDD", 80, "USD", 1, 1, "2026-10-13", "fixture", ads_ratio=ratio
+                )
 
 
 if __name__ == "__main__":

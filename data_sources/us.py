@@ -1,9 +1,10 @@
 """美股/港股/中概股数据源（基于 akshare + 新浪实时行情）"""
 import time
+import math
 import requests
 import akshare as ak
 import pandas as pd
-from typing import Optional
+from typing import Any, Optional
 from config import API_RETRY_TIMES, API_RETRY_DELAY
 
 
@@ -21,6 +22,50 @@ class USDataSource:
     def __init__(self):
         self._fx_rate: Optional[float] = None
         self._fx_cached_at: float = 0
+
+    @staticmethod
+    def build_input_record(
+        code: str,
+        price: Optional[float],
+        currency: Optional[str],
+        shares_or_market_cap: Optional[float],
+        profit_ttm: Optional[float],
+        financial_as_of: Optional[str],
+        source: Optional[str],
+        ads_ratio: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Build a common quote/financial record without sentinel zeros."""
+        code_key = str(code).strip().upper()
+        ads_ratio = USDataSource.ADS_RATIO.get(code_key, 1) if ads_ratio is None else ads_ratio
+        try:
+            ads_ratio = float(ads_ratio)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("ads_ratio must be positive and finite") from exc
+        if not math.isfinite(ads_ratio) or ads_ratio <= 0:
+            raise ValueError("ads_ratio must be positive and finite")
+        missing = []
+        for field, value in (
+            ("price", price), ("currency", currency),
+            ("shares_or_market_cap", shares_or_market_cap), ("profit_ttm", profit_ttm),
+            ("financial_as_of", financial_as_of), ("source", source),
+        ):
+            try:
+                is_missing = value is None or (isinstance(value, str) and not value.strip()) or bool(pd.isna(value))
+            except (TypeError, ValueError):
+                is_missing = False
+            if is_missing:
+                missing.append(field)
+        return {
+            "code": code,
+            "price": price,
+            "currency": currency,
+            "shares_or_market_cap": shares_or_market_cap,
+            "profit_ttm": profit_ttm,
+            "financial_as_of": financial_as_of,
+            "source": source,
+            "ads_ratio": int(ads_ratio) if ads_ratio.is_integer() else ads_ratio,
+            "validity_reason": "; ".join(f"missing {field}" for field in missing) or None,
+        }
 
     def _get_fx_rate(self) -> float:
         """获取最新 USD/CNY 中间价"""
