@@ -42,66 +42,16 @@ class USDataSource:
         return 7.1771
 
     def get_constituents(self, index_code: str) -> pd.DataFrame:
-        """返回预定义的中概互联网成分股（每个公司只保留主要上市地，避免重复）
-        规则：港股(0xxxx.HK) 优先于美股ADR；同一公司只出现一次
-        """
-        # 主要上市地（港股优先，纯美股除外）
-        stocks = {
-            # --- 港股（主要上市地）---
-            "00700.HK": {"name": "腾讯控股",   "exchange": "HKSE",  "sina_code": "hk00700"},
-            "09988.HK": {"name": "阿里巴巴－Ｗ", "exchange": "HKSE",  "sina_code": "hk09988"},
-            "01810.HK": {"name": "小米集团－Ｗ", "exchange": "HKSE",  "sina_code": "hk01810"},
-            "03690.HK": {"name": "美团－Ｗ",    "exchange": "HKSE",  "sina_code": "hk03690"},
-            "09999.HK": {"name": "网易－ＳＷ",  "exchange": "HKSE",  "sina_code": "hk09999"},
-            "09618.HK": {"name": "京东集团－ＳＷ","exchange": "HKSE",  "sina_code": "hk09618"},
-            "09961.HK": {"name": "携程集团－Ｓ", "exchange": "HKSE",  "sina_code": "hk09961"},
-            "09888.HK": {"name": "百度集团－Ｗ", "exchange": "HKSE",  "sina_code": "hk09888"},
-            "02423.HK": {"name": "贝壳－Ｗ",    "exchange": "HKSE",  "sina_code": "hk02423"},
-            "01024.HK": {"name": "快手－Ｗ",    "exchange": "HKSE",  "sina_code": "hk01024"},
-            "01781.HK": {"name": "满帮集团",    "exchange": "HKSE",  "sina_code": "hk01781"},
-            "06618.HK": {"name": "京东健康",    "exchange": "HKSE",  "sina_code": "hk06618"},
-            "01698.HK": {"name": "腾讯音乐－ＳＷ","exchange": "HKSE",  "sina_code": "hk01698"},
-            "09626.HK": {"name": "哔哩哔哩－Ｗ", "exchange": "HKSE",  "sina_code": "hk09626"},
-            "03888.HK": {"name": "金山软件",    "exchange": "HKSE",  "sina_code": "hk03888"},
-            "00136.HK": {"name": "中国儒意",    "exchange": "HKSE",  "sina_code": "hk00136"},
-            "00241.HK": {"name": "阿里健康",    "exchange": "HKSE",  "sina_code": "hk00241"},
-            "00780.HK": {"name": "同程旅行",    "exchange": "HKSE",  "sina_code": "hk00780"},
-            "01797.HK": {"name": "东方甄选",    "exchange": "HKSE",  "sina_code": "hk01797"},
-            "06060.HK": {"name": "众安在线",    "exchange": "HKSE",  "sina_code": "hk06060"},
-            "01357.HK": {"name": "美图公司",    "exchange": "HKSE",  "sina_code": "hk01357"},
-            "02400.HK": {"name": "心动公司",    "exchange": "HKSE",  "sina_code": "hk02400"},
-            "00772.HK": {"name": "阅文集团",    "exchange": "HKSE",  "sina_code": "hk00772"},
-            "01833.HK": {"name": "平安好医生",  "exchange": "HKSE",  "sina_code": "hk01833"},
-            "09997.HK": {"name": "京东物流",    "exchange": "HKSE",  "sina_code": "hk09997"},
-            "00941.HK": {"name": "中国移动",    "exchange": "HKSE",  "sina_code": "hk00941"},
-            "02013.HK": {"name": "微盟集团",    "exchange": "HKSE",  "sina_code": "hk02013"},
-            "02518.HK": {"name": "汽车之家－Ｓ", "exchange": "HKSE",  "sina_code": "hk02518"},
-            # --- 纯美股（无对应港股主要上市的）---
-            "PDD":     {"name": "拼多多(ADR)",    "exchange": "NASDAQ","sina_code": "PDD"},
-            "WB":      {"name": "微博(ADR)",     "exchange": "NASDAQ","sina_code": "WB"},
-            "FUTU":    {"name": "富途控股(ADR)", "exchange": "NASDAQ","sina_code": "FUTU"},
-            "YUMC":    {"name": "百胜中国(ADR)", "exchange": "NYSE",  "sina_code": "YUMC"},
-            "GDS":     {"name": "世纪互联(ADR)", "exchange": "NASDAQ","sina_code": "GDS"},
-            "VIPS":    {"name": "唯品会(ADR)",   "exchange": "NYSE",  "sina_code": "VIPS"},
-            "LI":      {"name": "理想汽车(ADR)", "exchange": "NASDAQ","sina_code": "LI"},
-            "NIO":     {"name": "蔚来(ADR)",     "exchange": "NYSE",  "sina_code": "NIO"},
-            "XPEV":    {"name": "小鹏汽车(ADR)", "exchange": "NYSE",  "sina_code": "XPEV"},
-            "TIGR":    {"name": "老虎证券(ADR)", "exchange": "NASDAQ","sina_code": "TIGR"},
-            "SINA":    {"name": "新浪(ADR)",     "exchange": "NASDAQ","sina_code": "SINA"},
-            "SOHU":    {"name": "搜狐(ADR)",     "exchange": "NASDAQ","sina_code": "SOHU"},
-            "MOMO":    {"name": "陌陌(ADR)",     "exchange": "NASDAQ","sina_code": "MOMO"},
-            "NCTY":    {"name": "世纪华通(OTC)",  "exchange": "OTC",   "sina_code": "NCTY"},
-            "IQ":      {"name": "爱奇艺(ADR)",   "exchange": "NASDAQ","sina_code": "IQ"},
-            "FENG":    {"name": "凤凰卫视(ADR)", "exchange": "NASDAQ","sina_code": "FENG"},
-            "VNET":    {"name": "网宿科技(ADR)", "exchange": "NASDAQ","sina_code": "VNET"},
-        }
+        """返回预定义的中概互联网成分股（35只：22港股+13美股ADR，去重）"""
+        from config import CHINA_INTL_STOCKS
         records = []
-        for code, info in stocks.items():
+        for code, name in CHINA_INTL_STOCKS.items():
+            is_hk = code.endswith('.HK')
             records.append({
                 "code": code,
-                "name": info["name"],
-                "exchange": info["exchange"],
-                "sina_code": info["sina_code"],
+                "name": name,
+                "exchange": "HKSE" if is_hk else "NASDAQ",
+                "sina_code": f"hk{code.replace('.HK','')}" if is_hk else code,
             })
         return pd.DataFrame(records)
 

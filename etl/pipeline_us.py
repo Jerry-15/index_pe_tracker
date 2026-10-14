@@ -1,15 +1,16 @@
-"""中概互联网指数 PE 计算引擎（港股 + 美股混合）"""
+"""中概互联网指数 PE 计算引擎（港股实时EPS + 美股参考PE）"""
 import time
+import requests
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional
 from data_sources.us import USDataSource
 from cache.db import CacheDB
-from config import API_BATCH_DELAY
+from config import API_BATCH_DELAY, CHINA_INTL_STOCKS, US_REF_PE
 
 
 class USETL:
-    """中概互联网指数 PE 计算（港股 + 美股）"""
+    """中概互联网指数 PE 计算（22港股+13美股ADR，共35只）"""
 
     def __init__(self, cache: Optional[CacheDB] = None):
         self.cache = cache or CacheDB()
@@ -17,27 +18,77 @@ class USETL:
         self.index_code = "CHINA_INTL"
         self.index_name = "中概互联网"
 
+    def _get_hk_price(self, code: str) -> float:
+        """从新浪获取港股实时价格"""
+        try:
+            url = f"https://hq.sinajs.cn/list=hk{code.replace('.HK','')}"
+            headers = {"Referer": "https://finance.sina.com.cn"}
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200 and len(r.text) > 50:
+                parts = r.text.split('="')[1].strip().rstrip(';').strip('"').split(',')
+                return float(parts[2]) if len(parts) > 2 and parts[2] else 0
+        except Exception:
+            pass
+        return 0
+
+    def _get_hk_eps(self, code: str) -> Optional[float]:
+        """从akshare获取港股EPS_TTM"""
+        try:
+            import akshare as ak
+            df = ak.stock_financial_hk_analysis_indicator_em(symbol=code.replace('.HK',''))
+            if not df.empty and 'EPS_TTM' in df.columns:
+                eps = df.iloc[0]['EPS_TTM']
+                return float(eps) if eps and eps > 0 else None
+        except Exception:
+            pass
+        return None
+
+    def _get_us_price(self, code: str) -> float:
+        """从akshare获取美股日K最新价"""
+        try:
+            import akshare as ak
+            df = ak.stock_us_daily(symbol=code)
+            if not df.empty:
+                return float(df.iloc[-1]['close'])
+        except Exception:
+            pass
+        return 0
+
     def run(self, progress_cb=None) -> pd.DataFrame:
         """运行当前快照更新"""
         if progress_cb:
             progress_cb("获取成分股列表...")
 
-        constituents = self.source.get_constituents(self.index_code)
-        stocks = constituents.to_dict("records")
+        stocks = CHINA_INTL_STOCKS
         total = len(stocks)
 
         if progress_cb:
             progress_cb(f"开始更新 {self.index_name}：{total} 只股票")
 
         results = []
-        for i, stock in enumerate(stocks):
+        for i, (code, name) in enumerate(stocks.items()):
             if progress_cb and i % 5 == 0:
                 progress_cb(f"更新数据 [{i}/{total}]")
-            data = self.source.get_current_pe(stock["code"])
-            if data:
-                data["name"] = stock["name"]
-                data["exchange"] = stock["exchange"]
-                results.append(data)
+
+            is_hk = code.endswith('.HK')
+            price = self._get_hk_price(code) if is_hk else self._get_us_price(code)
+            pe = None
+
+            if is_hk:
+                eps = self._get_hk_eps(code)
+                if eps and eps > 0 and price > 0:
+                    pe = round(price / eps, 2)
+            else:
+                # 美股用参考PE
+                pe = US_REF_PE.get(code)
+
+            if pe and pe > 0 and pe < 500:
+                results.append({
+                    "code": code,
+                    "name": name,
+                    "price": round(price, 2),
+                    "pe": pe,
+                })
             time.sleep(API_BATCH_DELAY)
 
         if not results:
@@ -46,26 +97,20 @@ class USETL:
         df = pd.DataFrame(results)
         today = pd.Timestamp.today().strftime("%Y-%m-%d")
 
-        # 过滤有效 PE（排除亏损股和异常值）
-        valid = df[df["pe"].notna() & (df["pe"] > 0) & (df["pe"] < 500)]
-        if len(valid) > 0:
-            prices = valid["price"].values
-            pes = valid["pe"].values
-            mvs = (prices ** 2) / pes
-            index_pe = float((mvs * pes).sum() / mvs.sum())
-            total_mv = float(mvs.sum())
-            total_profit = float(total_mv / index_pe)
-        else:
-            total_mv = 0.0
-            total_profit = 0.0
-            index_pe = None
+        # 市值加权PE = Σ(MV_i) / Σ(Profit_i)，MV_proxy = price²/pe
+        prices = df["price"].values
+        pes = df["pe"].values
+        mvs = (prices ** 2) / pes
+        total_mv = float(mvs.sum())
+        total_profit = float(total_mv / (float((mvs * pes).sum() / total_mv)))
+        index_pe = float((mvs * pes).sum() / total_mv)
 
         row = {
             "trade_date": today,
             "total_market_cap": round(total_mv, 6),
             "total_profit_ttm": round(total_profit, 6),
             "pe_ratio": index_pe,
-            "stock_count": len(valid),
+            "stock_count": len(df),
         }
         pe_df = pd.DataFrame([row])
 
@@ -74,8 +119,7 @@ class USETL:
         self._recompute_us_stats()
 
         if progress_cb:
-            status = f"✅ 完成：中概互联网 PE = {index_pe:.2f}x（{len(valid)}/{total} 只有效）" if index_pe else "⚠️ 无有效PE数据"
-            progress_cb(status)
+            progress_cb(f"✅ 完成：中概互联网 PE = {index_pe:.2f}x（{len(df)}/{total} 只有效）")
 
         return pe_df
 
@@ -119,60 +163,55 @@ class USETL:
         self.cache.save_us_pe_stats(pe_df[stats_cols])
 
     def run_historical(self, progress_cb=None) -> pd.DataFrame:
-        """构建历史 PE 序列（港股+美股混合，各日期取最近已发布的EPS_TTM）"""
-        constituents = self.source.get_constituents(self.index_code)
-        stocks = constituents.to_dict("records")
+        """构建历史 PE 序列（港股用历史EPS，美股用固定参考PE）"""
+        stocks = CHINA_INTL_STOCKS
+        total = len(stocks)
 
         if progress_cb:
-            progress_cb(f"拉取行情数据（{len(stocks)} 只股票）...")
+            progress_cb(f"拉取行情数据（{total} 只股票）...")
 
+        # 获取各股历史日K
         all_quotes = {}
-        for i, stock in enumerate(stocks):
+        for i, (code, name) in enumerate(stocks.items()):
             if progress_cb and i % 5 == 0:
-                progress_cb(f"拉取行情 [{i}/{len(stocks)}]")
-            quotes = self.source.get_daily_quotes(stock["code"])
+                progress_cb(f"拉取行情 [{i}/{total}]")
+            if code.endswith('.HK'):
+                quotes = self.source.get_daily_quotes(code)
+            else:
+                quotes = self.source.get_daily_quotes(code)
             if not quotes.empty:
-                all_quotes[stock["code"]] = quotes
+                all_quotes[code] = quotes
             time.sleep(API_BATCH_DELAY)
 
         if not all_quotes:
             return pd.DataFrame()
 
-        # 获取每只股票的历史 EPS 快照序列 [(report_date, eps)]
-        # 港股用 EPS_TTM，美股用 BASIC_EPS（年报值）
+        # 港股历史EPS序列
         eps_series = {}
-        for stock in stocks:
-            code = stock["code"]
-            fin = self.source.get_financials(code)
-            if fin.empty:
+        for code in list(stocks.keys()):
+            if not code.endswith('.HK'):
                 continue
-            # 找EPS列
-            eps_col = None
-            for col in ["EPS_TTM", "BASIC_EPS"]:
-                if col in fin.columns:
-                    eps_col = col
-                    break
-            if eps_col is None:
-                continue
-            # 找报告日期列
-            rd_col = "REPORT_DATE" if "REPORT_DATE" in fin.columns else fin.columns[0]
-            events = []
-            for _, row in fin.iterrows():
-                rd = row[rd_col]
-                if pd.isna(rd):
+            try:
+                import akshare as ak
+                df = ak.stock_financial_hk_analysis_indicator_em(symbol=code.replace('.HK',''))
+                if df.empty or 'EPS_TTM' not in df.columns:
                     continue
-                try:
-                    rd_ts = pd.Timestamp(rd)
-                except Exception:
-                    continue
-                eps_val = row[eps_col]
-                if pd.isna(eps_val) or eps_val <= 0:
-                    continue
-                events.append((rd_ts, float(eps_val)))
-            if not events:
-                continue
-            events.sort(key=lambda x: x[0])
-            eps_series[code] = events
+                events = []
+                for _, row in df.iterrows():
+                    rd = str(row.get('REPORT_DATE', ''))[:10]
+                    eps = row.get('EPS_TTM')
+                    if not eps or eps <= 0:
+                        continue
+                    try:
+                        rd_ts = pd.Timestamp(rd)
+                    except Exception:
+                        continue
+                    events.append((rd_ts, float(eps)))
+                events.sort()
+                if events:
+                    eps_series[code] = events
+            except Exception:
+                pass
 
         if progress_cb:
             progress_cb(f"共同交易日计算 PE...")
@@ -202,35 +241,34 @@ class USETL:
             mv_sum = 0.0
             count = 0
             for code, price in prices.items():
-                events = eps_series.get(code)
-                if not events:
-                    continue
-                # 找到在 td 之前最近一次财报的 EPS
-                best_eps = None
-                for rd, eps_val in events:
-                    if rd <= td:
-                        best_eps = eps_val
-                    else:
-                        break
-                if best_eps is None:
-                    continue
-                # 美股需汇率+ADS校正
-                eps_usd = best_eps
-                if self.source._is_us(code):
-                    rate = self.source._get_fx_rate()
-                    ads_ratio = self.source.ADS_RATIO.get(code, 1)
-                    eps_usd = best_eps * ads_ratio / rate
-                pe = price / eps_usd if eps_usd > 0 else None
-                if pe and 0 < pe < 500:
+                if code.endswith('.HK'):
+                    # 港股：用历史EPS
+                    events = eps_series.get(code)
+                    if not events:
+                        continue
+                    best_eps = None
+                    for rd, eps_val in events:
+                        if rd <= td:
+                            best_eps = eps_val
+                        else:
+                            break
+                    if best_eps is None or best_eps <= 0:
+                        continue
+                    pe = price / best_eps
+                else:
+                    # 美股：用固定参考PE
+                    ref_pe = US_REF_PE.get(code)
+                    if ref_pe is None or ref_pe <= 0:
+                        continue
+                    pe = ref_pe
+
+                if pe > 0 and pe < 500:
                     mv_proxy = (price ** 2) / pe
                     pe_sum += mv_proxy * pe
                     mv_sum += mv_proxy
                     count += 1
 
-            if count > 0 and mv_sum > 0:
-                # 最低成分股数量阈值：低于25只的日期说明行情数据缺失（如港股数据源断档），跳过避免毛刺
-                if count < 25:
-                    continue
+            if count > 0 and mv_sum > 0 and count >= 25:
                 index_pe = pe_sum / mv_sum
                 results.append({
                     "trade_date": date,
