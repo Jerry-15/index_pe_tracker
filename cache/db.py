@@ -126,6 +126,214 @@ class CacheDB:
                     PRIMARY KEY (snapshot_date, code)
                 );
             """)
+            self._migrate_h30533_tables(conn)
+
+    @staticmethod
+    def _migrate_h30533_tables(conn: sqlite3.Connection):
+        """Create H30533 storage and add columns to older installations."""
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS h30533_constituent_snapshot (
+                snapshot_date TEXT NOT NULL,
+                index_code TEXT NOT NULL,
+                security_code TEXT NOT NULL,
+                name TEXT,
+                exchange TEXT,
+                weight REAL,
+                issuer_id TEXT,
+                security_type TEXT,
+                ads_ratio REAL,
+                source_type TEXT,
+                as_of TEXT,
+                raw_metadata TEXT,
+                validity_reason TEXT,
+                PRIMARY KEY (snapshot_date, index_code, security_code)
+            );
+            CREATE TABLE IF NOT EXISTS h30533_daily_valuation (
+                trade_date TEXT NOT NULL,
+                index_code TEXT NOT NULL,
+                pe_ratio REAL,
+                earnings_yield REAL,
+                total_market_cap REAL,
+                total_profit_ttm REAL,
+                stock_count INTEGER,
+                weight_coverage REAL,
+                negative_profit_count INTEGER,
+                missing_count INTEGER,
+                source_type TEXT,
+                source_date TEXT,
+                constituent_basis TEXT,
+                validity_reason TEXT,
+                updated_at REAL,
+                PRIMARY KEY (trade_date, index_code)
+            );
+            CREATE TABLE IF NOT EXISTS h30533_security_valuation (
+                snapshot_date TEXT NOT NULL,
+                index_code TEXT NOT NULL,
+                security_code TEXT NOT NULL,
+                name TEXT,
+                issuer_id TEXT,
+                weight REAL,
+                price REAL,
+                market_cap REAL,
+                verified_shares REAL,
+                profit_ttm REAL,
+                earnings_yield REAL,
+                pe REAL,
+                financial_as_of TEXT,
+                source_date TEXT,
+                source_type TEXT,
+                validity_reason TEXT,
+                PRIMARY KEY (snapshot_date, index_code, security_code)
+            );
+        """)
+        migrations = {
+            "h30533_constituent_snapshot": {
+                "name": "TEXT", "exchange": "TEXT", "weight": "REAL",
+                "issuer_id": "TEXT", "security_type": "TEXT", "ads_ratio": "REAL",
+                "source_type": "TEXT", "as_of": "TEXT", "raw_metadata": "TEXT",
+                "validity_reason": "TEXT",
+            },
+            "h30533_daily_valuation": {
+                "earnings_yield": "REAL", "total_market_cap": "REAL",
+                "total_profit_ttm": "REAL", "stock_count": "INTEGER",
+                "weight_coverage": "REAL", "negative_profit_count": "INTEGER",
+                "missing_count": "INTEGER", "source_type": "TEXT",
+                "source_date": "TEXT", "constituent_basis": "TEXT",
+                "validity_reason": "TEXT", "updated_at": "REAL",
+            },
+            "h30533_security_valuation": {
+                "name": "TEXT", "issuer_id": "TEXT", "weight": "REAL",
+                "price": "REAL", "market_cap": "REAL", "verified_shares": "REAL",
+                "profit_ttm": "REAL", "earnings_yield": "REAL", "pe": "REAL",
+                "financial_as_of": "TEXT", "source_date": "TEXT",
+                "source_type": "TEXT", "validity_reason": "TEXT",
+            },
+        }
+        for table, columns in migrations.items():
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for column, sql_type in columns.items():
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+
+    @staticmethod
+    def _h30533_value(row, column):
+        value = row.get(column)
+        if pd.isna(value) if not isinstance(value, (dict, list)) else False:
+            return None
+        if column == "raw_metadata" and value is not None and not isinstance(value, str):
+            return json.dumps(value, ensure_ascii=True, sort_keys=True)
+        return value
+
+    @staticmethod
+    def _h30533_insert(conn, table, columns, records):
+        placeholders = ",".join("?" for _ in columns)
+        names = ", ".join(columns)
+        conn.executemany(
+            f"INSERT OR REPLACE INTO {table} ({names}) VALUES ({placeholders})",
+            records,
+        )
+
+    def save_h30533_daily(self, index_code: str, df: pd.DataFrame):
+        """Atomically replace the H30533 daily valuation rows for an index."""
+        if df.empty:
+            return
+        if "trade_date" not in df.columns:
+            raise KeyError("trade_date")
+        columns = [
+            "trade_date", "index_code", "pe_ratio", "earnings_yield",
+            "total_market_cap", "total_profit_ttm", "stock_count", "weight_coverage",
+            "negative_profit_count", "missing_count", "source_type", "source_date",
+            "constituent_basis", "validity_reason", "updated_at",
+        ]
+        if not set(df.columns).intersection(set(columns[2:-1])):
+            raise ValueError("H30533 daily valuation has no recognized fields")
+        records = [tuple(self._h30533_value(row, column) if column != "index_code"
+                         else index_code for column in columns)
+                   for _, row in df.iterrows()]
+        with self._conn() as conn:
+            conn.execute("DELETE FROM h30533_daily_valuation WHERE index_code=?", (index_code,))
+            self._h30533_insert(conn, "h30533_daily_valuation", columns, records)
+
+    def load_h30533_daily(self, index_code: str) -> pd.DataFrame:
+        with self._conn() as conn:
+            return pd.read_sql_query(
+                "SELECT * FROM h30533_daily_valuation WHERE index_code=? ORDER BY trade_date",
+                conn, params=[index_code],
+            )
+
+    def save_h30533_snapshot(self, index_code: str, constituents: pd.DataFrame,
+                             daily: pd.DataFrame, securities: pd.DataFrame):
+        """Atomically replace all H30533 data after validating every input row."""
+        if constituents.empty or daily.empty or securities.empty:
+            raise ValueError("H30533 snapshot parts must not be empty")
+        constituent_columns = [
+            "snapshot_date", "index_code", "security_code", "name", "exchange", "weight",
+            "issuer_id", "security_type", "ads_ratio", "source_type", "as_of",
+            "raw_metadata", "validity_reason",
+        ]
+        daily_columns = [
+            "trade_date", "index_code", "pe_ratio", "earnings_yield", "total_market_cap",
+            "total_profit_ttm", "stock_count", "weight_coverage", "negative_profit_count",
+            "missing_count", "source_type", "source_date", "constituent_basis",
+            "validity_reason", "updated_at",
+        ]
+        security_columns = [
+            "snapshot_date", "index_code", "security_code", "name", "issuer_id", "weight",
+            "price", "market_cap", "verified_shares", "profit_ttm", "earnings_yield", "pe",
+            "financial_as_of", "source_date", "source_type", "validity_reason",
+        ]
+        constituent_date = constituents.iloc[0].get("as_of") or daily.iloc[0].get("trade_date")
+        security_date = securities.iloc[0].get("source_date") or daily.iloc[0].get("trade_date")
+
+        def records_for(frame, columns, default_date=None):
+            records = []
+            for _, row in frame.iterrows():
+                values = []
+                for column in columns:
+                    if column == "index_code":
+                        value = index_code
+                    elif column == "snapshot_date" and default_date is not None:
+                        value = row.get(column) or default_date
+                    elif column == "updated_at":
+                        value = time.time()
+                    else:
+                        value = self._h30533_value(row, column)
+                    if column in ("security_code", "trade_date", "snapshot_date") and not value:
+                        raise ValueError(f"missing H30533 {column}")
+                    values.append(value)
+                records.append(tuple(values))
+            return records
+
+        constituent_records = records_for(constituents, constituent_columns, constituent_date)
+        daily_records = records_for(daily, daily_columns)
+        security_records = records_for(securities, security_columns, security_date)
+        with self._conn() as conn:
+            for table in ("h30533_constituent_snapshot", "h30533_daily_valuation",
+                          "h30533_security_valuation"):
+                conn.execute(f"DELETE FROM {table} WHERE index_code=?", (index_code,))
+            self._h30533_insert(conn, "h30533_constituent_snapshot", constituent_columns,
+                                constituent_records)
+            self._h30533_insert(conn, "h30533_daily_valuation", daily_columns, daily_records)
+            self._h30533_insert(conn, "h30533_security_valuation", security_columns,
+                                security_records)
+
+    def load_h30533_snapshot(self, index_code: str):
+        with self._conn() as conn:
+            result = {}
+            for key, table, order in (
+                ("constituents", "h30533_constituent_snapshot", "snapshot_date, security_code"),
+                ("daily", "h30533_daily_valuation", "trade_date"),
+                ("securities", "h30533_security_valuation", "snapshot_date, security_code"),
+            ):
+                result[key] = pd.read_sql_query(
+                    f"SELECT * FROM {table} WHERE index_code=? ORDER BY {order}",
+                    conn, params=[index_code],
+                )
+            if not result["constituents"].empty:
+                result["constituents"]["raw_metadata"] = result["constituents"]["raw_metadata"].apply(
+                    lambda value: json.loads(value) if isinstance(value, str) else value
+                )
+            return result
 
     def save_quotes(self, code: str, df: pd.DataFrame):
         """保存日K线数据"""
