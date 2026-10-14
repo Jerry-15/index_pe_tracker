@@ -6,8 +6,9 @@ labelled fallback and are never presented as an official index snapshot.
 from __future__ import annotations
 
 import os
+import re
 import time
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 import pandas as pd
 import requests
@@ -23,8 +24,22 @@ from config import (
 class H30533SourceError(RuntimeError):
     """Raised when a source response cannot produce a valid snapshot."""
 
+    def __init__(self, message: str, code: str = "invalid_response", **details: Any) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
+
 
 class H30533Source:
+    """Load H30533 constituent snapshots from CSI, then ETF disclosure.
+
+    The CSI endpoint is the public ``/csindex-home/index/constituents`` route;
+    the request uses ``indexCode`` and the response maps ``data.asOfDate`` and
+    ``data.constituents`` to the normalized snapshot.  The fallback endpoint
+    is the 513050 holdings page, mapping ``as_of`` and ``holdings``.  These
+    mappings reflect the payloads covered by the parser tests and are kept
+    here so endpoint drift fails loudly instead of becoming a custom basket.
+    """
     OFFICIAL_URL = os.getenv(
         "H30533_OFFICIAL_URL",
         "https://www.csindex.com.cn/csindex-home/index/constituents",
@@ -33,10 +48,11 @@ class H30533Source:
         "H30533_ETF_URL",
         "https://www.efunds.com.cn/etrade/fund/513050/holdings",
     )
-    COLUMNS = [
+    REQUIRED_COLUMNS = [
         "index_code", "security_code", "name", "exchange", "weight",
         "as_of", "source_type", "raw_metadata",
     ]
+    COLUMNS = REQUIRED_COLUMNS
 
     def __init__(
         self,
@@ -72,7 +88,9 @@ class H30533Source:
                     errors.append(f"{source_type}: {exc}")
                     if attempt < self.retries:
                         time.sleep(0.2 * (attempt + 1))
-        raise H30533SourceError("; ".join(errors))
+        raise H30533SourceError(
+            "; ".join(errors), "all_sources_rejected", errors=errors
+        )
 
     def parse_official(self, payload: Any) -> pd.DataFrame:
         return self._parse(payload, "csi_official")
@@ -96,11 +114,21 @@ class H30533Source:
     def _parse(self, payload: Any, source_type: str) -> pd.DataFrame:
         self.rejected_rows = []
         self.last_source_type = source_type
-        as_of = self._find_nested_value(payload, "as_of", "asOfDate", "date", "disclosureDate")
+        self._validate_index_identity(payload, source_type)
+        date_fields = {
+            "csi_official": ("data.asOfDate",),
+            "etf_disclosure": ("as_of", "disclosureDate"),
+        }[source_type]
+        source_date_keys = ("asOfDate",) if source_type == "csi_official" else ("as_of", "disclosureDate")
+        as_of = self._source_field(payload, source_type, *source_date_keys, data_only=source_type == "csi_official")
         if not as_of:
-            raise H30533SourceError(f"{source_type} response has no as_of date")
+            raise H30533SourceError(
+                f"{source_type} response has no as_of date",
+                "missing_as_of",
+                expected_fields=date_fields,
+            )
         as_of = self._normalize_date(as_of)
-        rows = self._find_rows(payload)
+        rows = self._find_source_rows(payload, source_type)
         normalized = []
         for raw in rows:
             try:
@@ -134,24 +162,68 @@ class H30533Source:
                 })
             except (TypeError, ValueError) as exc:
                 self.rejected_rows.append({"row": raw, "reason": str(exc)})
-        return pd.DataFrame(normalized, columns=self.COLUMNS)
+        return pd.DataFrame(normalized, columns=self.REQUIRED_COLUMNS)
 
     @staticmethod
-    def _find_rows(payload: Any) -> list[Mapping[str, Any]]:
-        if isinstance(payload, list):
-            return payload
+    def _validate_index_identity(payload: Any, source_type: str) -> None:
+        if source_type != "csi_official":
+            return
+        identity = H30533Source._source_field(
+            payload, source_type, "indexCode", "index_code", "indexId"
+        )
+        if identity is None:
+            raise H30533SourceError(
+                "csi_official response does not identify an index",
+                "missing_index_identity",
+                expected=CHINA_INTL_INDEX_CODE,
+            )
+        if str(identity).strip().upper() != CHINA_INTL_INDEX_CODE:
+            raise H30533SourceError(
+                f"csi_official response identifies {identity}, not {CHINA_INTL_INDEX_CODE}",
+                "wrong_index",
+                expected=CHINA_INTL_INDEX_CODE,
+                actual=str(identity),
+            )
+
+    @staticmethod
+    def _source_field(payload: Any, source_type: str, *keys: str, data_only: bool = False) -> Any:
         if not isinstance(payload, Mapping):
-            raise H30533SourceError("source response is not an object or list")
-        for key in ("constituents", "holdings", "data", "result", "rows"):
-            value = payload.get(key)
-            if isinstance(value, list):
+            return None
+        containers = [payload]
+        if source_type == "csi_official":
+            if not isinstance(payload.get("data"), Mapping):
+                return None if data_only else H30533Source._find_value(payload, *keys)
+            containers = [payload["data"]] if data_only else [payload["data"], payload]
+        for container in containers:
+            value = H30533Source._find_value(container, *keys)
+            if value is not None:
                 return value
-            if isinstance(value, Mapping):
-                try:
-                    return H30533Source._find_rows(value)
-                except H30533SourceError:
-                    pass
-        raise H30533SourceError("source response has no constituent rows")
+        return None
+
+    @staticmethod
+    def _find_source_rows(payload: Any, source_type: str) -> list[Mapping[str, Any]]:
+        if not isinstance(payload, Mapping):
+            raise H30533SourceError(
+                "source response is not an object", "malformed_rows"
+            )
+        containers = [payload]
+        if source_type == "csi_official" and isinstance(payload.get("data"), Mapping):
+            containers.insert(0, payload["data"])
+        fields = ("constituents", "rows") if source_type == "csi_official" else ("holdings", "rows")
+        for container in containers:
+            for field in fields:
+                if field in container:
+                    value = container[field]
+                    if not isinstance(value, list) or not all(isinstance(row, Mapping) for row in value):
+                        raise H30533SourceError(
+                            f"{field} must contain object rows",
+                            "malformed_rows",
+                            field=field,
+                        )
+                    return value
+        raise H30533SourceError(
+            "source response has no constituent rows", "malformed_rows"
+        )
 
     @staticmethod
     def _find_value(value: Any, *keys: str) -> Any:
@@ -163,23 +235,17 @@ class H30533Source:
         return None
 
     @staticmethod
-    def _find_nested_value(value: Any, *keys: str) -> Any:
-        result = H30533Source._find_value(value, *keys)
-        if result is not None:
-            return result
-        if isinstance(value, Mapping):
-            for nested in value.values():
-                if isinstance(nested, Mapping):
-                    result = H30533Source._find_nested_value(nested, *keys)
-                    if result is not None:
-                        return result
-        return None
-
-    @staticmethod
     def _normalize_date(value: Any) -> str:
-        parsed = pd.to_datetime(value, errors="coerce")
+        text = str(value).strip()
+        if not re.fullmatch(r"\d{4}[-/]\d{2}[-/]\d{2}", text):
+            raise H30533SourceError(
+                f"invalid as_of date: {value}", "invalid_as_of", value=text
+            )
+        parsed = pd.to_datetime(text, format="%Y/%m/%d" if "/" in text else "%Y-%m-%d", errors="coerce")
         if pd.isna(parsed):
-            raise H30533SourceError(f"invalid as_of date: {value}")
+            raise H30533SourceError(
+                f"invalid as_of date: {value}", "invalid_as_of", value=str(value)
+            )
         return parsed.strftime("%Y-%m-%d")
 
     @staticmethod
