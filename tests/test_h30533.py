@@ -7,10 +7,35 @@ from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
 
 
 class H30533SourceTests(unittest.TestCase):
+    def test_official_payload_must_identify_h30533(self):
+        source = H30533Source()
+
+        with self.assertRaises(H30533SourceError) as raised:
+            source.parse_official({
+                "data": {
+                    "indexCode": "000300",
+                    "asOfDate": "2026-10-13",
+                    "constituents": [],
+                }
+            })
+
+        self.assertEqual(raised.exception.code, "wrong_index")
+        self.assertEqual(raised.exception.details["expected"], CHINA_INTL_INDEX_CODE)
+
+    def test_official_payload_rejects_unrelated_shape_with_structured_error(self):
+        source = H30533Source()
+
+        with self.assertRaises(H30533SourceError) as raised:
+            source.parse_official({"status": "ok", "data": {"items": []}})
+
+        self.assertEqual(raised.exception.code, "missing_index_identity")
+        self.assertIn("expected", raised.exception.details)
+
     def test_parse_official_normalizes_rows_and_percent_weights(self):
         source = H30533Source()
         payload = {
             "data": {
+                "indexCode": CHINA_INTL_INDEX_CODE,
                 "asOfDate": "2026-10-13",
                 "constituents": [
                     {"securityCode": "00700", "securityName": "Tencent", "exchange": "HK", "weight": "8.25"},
@@ -29,6 +54,8 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result["weight"].tolist(), [0.0825, 0.05])
         self.assertEqual(result["source_type"].unique().tolist(), ["csi_official"])
         self.assertEqual(result["as_of"].unique().tolist(), ["2026-10-13"])
+        self.assertEqual(list(result.columns), H30533Source.REQUIRED_COLUMNS)
+        self.assertIsInstance(result.iloc[0]["raw_metadata"], dict)
 
     def test_parse_etf_disclosure_is_explicit_fallback(self):
         source = H30533Source()
@@ -47,14 +74,91 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]["weight"], 0.071)
         self.assertEqual(source.last_source_type, "etf_disclosure")
 
+    def test_missing_code_and_weight_are_rejected_with_reasons(self):
+        source = H30533Source()
+        result = source.parse_official({
+            "data": {
+                "indexCode": CHINA_INTL_INDEX_CODE,
+                "asOfDate": "2026-10-13",
+                "constituents": [
+                    {"name": "No code", "exchange": "HK", "weight": 1},
+                    {"code": "00700", "name": "No weight", "exchange": "HK"},
+                ],
+            },
+        })
+
+        self.assertTrue(result.empty)
+        self.assertEqual(
+            [item["reason"] for item in source.rejected_rows],
+            ["missing security code", "missing weight"],
+        )
+
+    def test_out_of_range_weight_is_rejected(self):
+        source = H30533Source()
+        result = source.parse_official({
+            "data": {
+                "indexCode": CHINA_INTL_INDEX_CODE,
+                "asOfDate": "2026-10-13",
+                "constituents": [
+                    {"code": "00700", "name": "Tencent", "exchange": "HK", "weight": 100.1},
+                ],
+            },
+        })
+
+        self.assertTrue(result.empty)
+        self.assertIn("weight out of range", source.rejected_rows[0]["reason"])
+
+    def test_invalid_as_of_is_rejected(self):
+        source = H30533Source()
+
+        with self.assertRaises(H30533SourceError) as raised:
+            source.parse_official({
+                "data": {
+                    "indexCode": CHINA_INTL_INDEX_CODE,
+                    "asOfDate": "not-a-date",
+                    "constituents": [],
+                },
+            })
+
+        self.assertEqual(raised.exception.code, "invalid_as_of")
+
+    def test_malformed_constituent_array_is_rejected(self):
+        source = H30533Source()
+
+        with self.assertRaises(H30533SourceError) as raised:
+            source.parse_official({
+                "data": {
+                    "indexCode": CHINA_INTL_INDEX_CODE,
+                    "asOfDate": "2026-10-13",
+                    "constituents": {"code": "00700"},
+                },
+            })
+
+        self.assertEqual(raised.exception.code, "malformed_rows")
+
+    def test_required_schema_is_stable_for_empty_valid_snapshot(self):
+        source = H30533Source()
+        result = source.parse_official({
+            "data": {
+                "indexCode": CHINA_INTL_INDEX_CODE,
+                "asOfDate": "2026-10-13",
+                "constituents": [],
+            },
+        })
+
+        self.assertEqual(list(result.columns), H30533Source.REQUIRED_COLUMNS)
+
     def test_malformed_rows_are_rejected_with_reason(self):
         source = H30533Source()
         payload = {
-            "as_of": "2026-10-13",
-            "constituents": [
-                {"code": "00700", "name": "Tencent", "exchange": "HK", "weight": "bad"},
-                {"code": "09988", "name": "Alibaba", "exchange": "HK", "weight": 4},
-            ],
+            "data": {
+                "indexCode": CHINA_INTL_INDEX_CODE,
+                "asOfDate": "2026-10-13",
+                "constituents": [
+                    {"code": "00700", "name": "Tencent", "exchange": "HK", "weight": "bad"},
+                    {"code": "09988", "name": "Alibaba", "exchange": "HK", "weight": 4},
+                ],
+            },
         }
 
         result = source.parse_official(payload)
