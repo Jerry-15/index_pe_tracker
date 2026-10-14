@@ -61,6 +61,8 @@ class H30533Source:
         retries: int = H30533_SOURCE_RETRIES,
     ) -> None:
         self.fetcher = fetcher or self._request_json
+        self.official_url = os.getenv("H30533_OFFICIAL_URL", self.OFFICIAL_URL)
+        self.etf_url = os.getenv("H30533_ETF_URL", self.ETF_URL)
         self.timeout = timeout
         self.retries = retries
         self.rejected_rows: list[dict[str, Any]] = []
@@ -75,8 +77,8 @@ class H30533Source:
         """Return the official snapshot, falling back to ETF disclosure."""
         errors = []
         for source_type, url, parser, params in (
-            ("csi_official", self.OFFICIAL_URL, self.parse_official, {"indexCode": CHINA_INTL_INDEX_CODE}),
-            ("etf_disclosure", self.ETF_URL, self.parse_etf_disclosure, {"fundCode": CHINA_INTL_FUND_CODE}),
+            ("csi_official", self.official_url, self.parse_official, {"indexCode": CHINA_INTL_INDEX_CODE}),
+            ("etf_disclosure", self.etf_url, self.parse_etf_disclosure, {"fundCode": CHINA_INTL_FUND_CODE}),
         ):
             for attempt in range(self.retries + 1):
                 try:
@@ -84,10 +86,16 @@ class H30533Source:
                     if result.empty:
                         raise H30533SourceError("source returned no valid constituent rows")
                     return result
-                except Exception as exc:
+                except H30533SourceError:
+                    raise
+                except requests.RequestException as exc:
                     errors.append(f"{source_type}: {exc}")
                     if attempt < self.retries:
                         time.sleep(0.2 * (attempt + 1))
+                    continue
+                except Exception as exc:
+                    errors.append(f"{source_type}: {exc}")
+                    break
         raise H30533SourceError(
             "; ".join(errors), "all_sources_rejected", errors=errors
         )
@@ -99,16 +107,29 @@ class H30533Source:
         return self._parse(payload, "etf_disclosure")
 
     def normalize_code(self, code: Any, exchange: Any) -> str:
-        value = str(code).strip().upper()
+        value = str(code)
+        if not value or value != value.strip() or re.search(r"\s", value):
+            raise ValueError("invalid security code")
+        value = value.upper()
         market = str(exchange or "").strip().upper()
         if value.endswith((".HK", ".SH", ".SZ", ".US")):
+            if not re.fullmatch(r"(?:\d{5}\.HK|\d{6}\.(?:SH|SZ)|[A-Z0-9.-]+\.US)", value):
+                raise ValueError("invalid security code")
             return value
         if market in {"HK", "HKG", "港股", "香港"}:
+            if not re.fullmatch(r"\d{1,5}", value):
+                raise ValueError("invalid security code")
             return f"{value.zfill(5)}.HK"
         if market in {"SH", "SSE", "沪", "上海"}:
+            if not re.fullmatch(r"\d{1,6}", value):
+                raise ValueError("invalid security code")
             return f"{value.zfill(6)}.SH"
         if market in {"SZ", "SZSE", "深", "深圳"}:
+            if not re.fullmatch(r"\d{1,6}", value):
+                raise ValueError("invalid security code")
             return f"{value.zfill(6)}.SZ"
+        if not re.fullmatch(r"[A-Z0-9.-]+", value):
+            raise ValueError("invalid security code")
         return value
 
     def _parse(self, payload: Any, source_type: str) -> pd.DataFrame:
@@ -166,6 +187,22 @@ class H30533Source:
 
     @staticmethod
     def _validate_index_identity(payload: Any, source_type: str) -> None:
+        if source_type == "etf_disclosure":
+            identity = H30533Source._source_field(payload, source_type, "fundCode", "fund_code", "fundId")
+            if identity is None:
+                raise H30533SourceError(
+                    "etf_disclosure response does not identify a fund",
+                    "missing_fund_identity",
+                    expected=CHINA_INTL_FUND_CODE,
+                )
+            if str(identity).strip() != CHINA_INTL_FUND_CODE:
+                raise H30533SourceError(
+                    f"etf_disclosure response identifies {identity}, not {CHINA_INTL_FUND_CODE}",
+                    "wrong_fund",
+                    expected=CHINA_INTL_FUND_CODE,
+                    actual=str(identity),
+                )
+            return
         if source_type != "csi_official":
             return
         identity = H30533Source._source_field(

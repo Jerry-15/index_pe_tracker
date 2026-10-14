@@ -1,6 +1,7 @@
 import unittest
 
 import pandas as pd
+import requests
 
 from data_sources.h30533 import H30533Source, H30533SourceError
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
@@ -60,6 +61,7 @@ class H30533SourceTests(unittest.TestCase):
     def test_parse_etf_disclosure_is_explicit_fallback(self):
         source = H30533Source()
         payload = {
+            "fundCode": CHINA_INTL_FUND_CODE,
             "as_of": "2026/10/10",
             "holdings": [
                 {"code": "00700", "name": "Tencent", "market": "HK", "weight_pct": "7.1%"},
@@ -181,6 +183,7 @@ class H30533SourceTests(unittest.TestCase):
             if params.get("indexCode"):
                 raise RuntimeError("CSI unavailable")
             return {
+                "fundCode": CHINA_INTL_FUND_CODE,
                 "as_of": "2026-10-10",
                 "holdings": [{"code": "00700", "name": "Tencent", "market": "HK", "weight_pct": 7.1}],
             }
@@ -190,6 +193,58 @@ class H30533SourceTests(unittest.TestCase):
 
         self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
         self.assertEqual(calls, [{"indexCode": CHINA_INTL_INDEX_CODE}, {"fundCode": CHINA_INTL_FUND_CODE}])
+
+    def test_get_snapshot_retries_transient_transport_error(self):
+        attempts = []
+
+        def fetcher(url, params):
+            attempts.append(params)
+            if len(attempts) == 1:
+                raise requests.ConnectionError("temporary outage")
+            return {
+                "data": {
+                    "indexCode": CHINA_INTL_INDEX_CODE,
+                    "asOfDate": "2026-10-13",
+                    "constituents": [{"code": "00700", "name": "Tencent", "exchange": "HK", "weight": 7}],
+                },
+            }
+
+        source = H30533Source(fetcher=fetcher, retries=1)
+
+        result = source.get_snapshot()
+
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(result.iloc[0]["source_type"], "csi_official")
+
+    def test_get_snapshot_preserves_deterministic_source_error(self):
+        def fetcher(url, params):
+            return {"data": {"indexCode": "000300"}}
+
+        source = H30533Source(fetcher=fetcher, retries=2)
+
+        with self.assertRaises(H30533SourceError) as raised:
+            source.get_snapshot()
+
+        self.assertEqual(raised.exception.code, "wrong_index")
+
+    def test_etf_disclosure_must_identify_513050(self):
+        source = H30533Source()
+
+        with self.assertRaises(H30533SourceError) as raised:
+            source.parse_etf_disclosure({
+                "fundCode": "000001",
+                "as_of": "2026-10-10",
+                "holdings": [],
+            })
+
+        self.assertEqual(raised.exception.code, "wrong_fund")
+
+    def test_normalize_code_rejects_whitespace_and_invalid_values(self):
+        source = H30533Source()
+
+        for code in (" 00700", "007 00", "not a code", ""):
+            with self.assertRaises(ValueError):
+                source.normalize_code(code, "HK")
 
     def test_normalize_code_handles_exchange_and_preserves_us_symbols(self):
         source = H30533Source()
