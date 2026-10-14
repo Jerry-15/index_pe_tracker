@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import requests
@@ -8,9 +8,99 @@ from data_sources.h30533 import H30533Source, H30533SourceError
 from data_sources.sina import SinaDataSource
 from data_sources.us import USDataSource
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
+from etl.pipeline_us import aggregate_h30533, USETL
 
 
 class H30533SourceTests(unittest.TestCase):
+    def test_aggregate_h30533_uses_weighted_earnings_yield(self):
+        rows = pd.DataFrame([
+            {"weight": 0.25, "market_cap": 100.0, "profit_ttm": 10.0},
+            {"weight": 0.50, "market_cap": 200.0, "profit_ttm": 20.0},
+        ])
+
+        result = aggregate_h30533(rows, min_weight_coverage=0.7)
+
+        expected_yield = 0.25 * (10 / 100) + 0.50 * (20 / 200)
+        self.assertAlmostEqual(result["earnings_yield"], expected_yield)
+        self.assertAlmostEqual(result["pe"], 1 / expected_yield)
+        self.assertEqual(result["weight_coverage"], 0.75)
+        self.assertTrue(result["valid"])
+
+    def test_aggregate_h30533_counts_negative_profit_without_using_it(self):
+        rows = pd.DataFrame([
+            {"weight": 0.60, "market_cap": 100.0, "profit_ttm": 10.0},
+            {"weight": 0.20, "market_cap": 100.0, "profit_ttm": -5.0},
+        ])
+
+        result = aggregate_h30533(rows)
+
+        self.assertAlmostEqual(result["earnings_yield"], 0.06)
+        self.assertEqual(result["negative_profit_count"], 1)
+        self.assertEqual(result["weight_coverage"], 0.6)
+        self.assertIsNone(result["pe"])
+        self.assertFalse(result["valid"])
+        self.assertIn("coverage", result["reason"])
+
+    def test_aggregate_h30533_does_not_renormalize_missing_weights(self):
+        rows = pd.DataFrame([
+            {"weight": 0.79, "market_cap": 100.0, "profit_ttm": 10.0},
+            {"weight": 0.21, "market_cap": None, "profit_ttm": 10.0},
+        ])
+
+        result = aggregate_h30533(rows)
+
+        self.assertEqual(result["weight_coverage"], 0.79)
+        self.assertIsNone(result["pe"])
+        self.assertEqual(result["missing_count"], 1)
+        self.assertIn("coverage", result["reason"])
+
+    def test_aggregate_h30533_can_use_verified_shares_and_price(self):
+        rows = pd.DataFrame([{
+            "weight": 0.8,
+            "price": 12.0,
+            "verified_shares": 10.0,
+            "profit_ttm": 24.0,
+        }])
+
+        result = aggregate_h30533(rows)
+
+        self.assertAlmostEqual(result["earnings_yield"], 0.16)
+        self.assertAlmostEqual(result["pe"], 6.25)
+
+    def test_pipeline_uses_h30533_source_and_verified_records(self):
+        source = USETL.__module__
+        with open(__import__(source, fromlist=["__file"]).__file__, encoding="utf-8") as handle:
+            implementation = handle.read()
+
+        self.assertIn("H30533Source", implementation)
+        self.assertIn("get_current_pe", implementation)
+        self.assertNotIn("US_REF_PE", implementation)
+        self.assertNotIn("price ** 2", implementation)
+        self.assertNotIn("price**2", implementation)
+
+    def test_pipeline_consumes_deduplicated_h30533_snapshot(self):
+        etl = USETL(cache=MagicMock())
+        etl.h30533_source = MagicMock()
+        etl.source = MagicMock()
+        etl.h30533_source.get_snapshot.return_value = pd.DataFrame([{
+            "security_code": "BABA",
+            "name": "Alibaba",
+            "weight": 0.8,
+            "source_type": "csi_official",
+            "as_of": "2026-10-13",
+        }])
+        etl.source.get_current_pe.return_value = {
+            "price": 80.0,
+            "market_cap": 800.0,
+            "profit_ttm": 80.0,
+        }
+
+        with patch.object(etl, "_recompute_us_stats"):
+            result = etl.run()
+
+        self.assertEqual(result.iloc[0]["stock_count"], 1)
+        etl.h30533_source.get_snapshot.assert_called_once_with()
+        etl.source.get_current_pe.assert_called_once_with("BABA")
     def test_official_payload_must_identify_h30533(self):
         source = H30533Source()
 

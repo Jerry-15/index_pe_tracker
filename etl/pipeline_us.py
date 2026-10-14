@@ -1,116 +1,158 @@
-"""中概互联网指数 PE 计算引擎（港股实时EPS + 美股参考PE）"""
+"""H30533 weighted earnings-yield valuation pipeline."""
 import time
-import requests
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional
+from data_sources.h30533 import H30533Source
 from data_sources.us import USDataSource
 from cache.db import CacheDB
-from config import API_BATCH_DELAY, CHINA_INTL_STOCKS, US_REF_PE
+from config import API_BATCH_DELAY, CHINA_INTL_INDEX_CODE
+
+
+def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8) -> dict:
+    """Aggregate verified H30533 inputs using weighted earnings yield.
+
+    Weights are always index snapshot weights.  Invalid inputs are omitted from
+    the numerator without renormalizing the remaining weights.
+    """
+    if not 0 <= min_weight_coverage <= 1:
+        raise ValueError("min_weight_coverage must be between 0 and 1")
+
+    total_weight = 0.0
+    valid_weight = 0.0
+    earnings_yield = 0.0
+    missing_count = 0
+    negative_profit_count = 0
+    invalid_count = 0
+    valid_count = 0
+
+    for _, row in rows.iterrows():
+        try:
+            weight = float(row.get("weight"))
+        except (TypeError, ValueError):
+            invalid_count += 1
+            continue
+        if not np.isfinite(weight) or weight < 0:
+            invalid_count += 1
+            continue
+        total_weight += weight
+
+        market_cap = row.get("market_cap")
+        if market_cap is None or pd.isna(market_cap):
+            shares = row.get("verified_shares")
+            price = row.get("price")
+            if shares is not None and price is not None and not pd.isna(shares) and not pd.isna(price):
+                try:
+                    market_cap = float(shares) * float(price)
+                except (TypeError, ValueError):
+                    market_cap = None
+        profit_value = row.get("profit_ttm")
+        if market_cap is None or pd.isna(market_cap) or profit_value is None or pd.isna(profit_value):
+            missing_count += 1
+            continue
+        try:
+            market_cap = float(market_cap)
+            profit = float(profit_value)
+        except (TypeError, ValueError):
+            invalid_count += 1
+            continue
+        if not np.isfinite(market_cap) or not np.isfinite(profit):
+            invalid_count += 1
+            continue
+        if market_cap <= 0:
+            invalid_count += 1
+            continue
+        if profit <= 0:
+            negative_profit_count += 1
+            continue
+
+        valid_weight += weight
+        earnings_yield += weight * (profit / market_cap)
+        valid_count += 1
+
+    # Coverage is against the published index weights, never against the
+    # surviving rows.  This deliberately leaves missing weight unallocated.
+    coverage = valid_weight
+    reason = None
+    if coverage < min_weight_coverage:
+        reason = f"insufficient weight coverage: {coverage:.6f} < {min_weight_coverage:.6f}"
+    elif earnings_yield <= 0:
+        reason = "aggregate earnings yield is non-positive"
+
+    return {
+        "pe": 1 / earnings_yield if reason is None else None,
+        "earnings_yield": earnings_yield,
+        "weight_coverage": coverage,
+        "valid_weight": valid_weight,
+        "total_weight": total_weight,
+        "valid_count": valid_count,
+        "missing_count": missing_count,
+        "negative_profit_count": negative_profit_count,
+        "invalid_count": invalid_count,
+        "valid": reason is None,
+        "reason": reason,
+        "validity_reason": reason,
+    }
 
 
 class USETL:
-    """中概互联网指数 PE 计算（22港股+13美股ADR，共35只）"""
+    """H30533 valuation ETL using the normalized source and input records."""
 
     def __init__(self, cache: Optional[CacheDB] = None):
         self.cache = cache or CacheDB()
         self.source = USDataSource()
-        self.index_code = "CHINA_INTL"
-        self.index_name = "中概互联网"
-
-    def _get_hk_price(self, code: str) -> float:
-        """从新浪获取港股实时价格"""
-        try:
-            url = f"https://hq.sinajs.cn/list=hk{code.replace('.HK','')}"
-            headers = {"Referer": "https://finance.sina.com.cn"}
-            r = requests.get(url, headers=headers, timeout=10)
-            if r.status_code == 200 and len(r.text) > 50:
-                parts = r.text.split('="')[1].strip().rstrip(';').strip('"').split(',')
-                return float(parts[2]) if len(parts) > 2 and parts[2] else 0
-        except Exception:
-            pass
-        return 0
-
-    def _get_hk_eps(self, code: str) -> Optional[float]:
-        """从akshare获取港股EPS_TTM"""
-        try:
-            import akshare as ak
-            df = ak.stock_financial_hk_analysis_indicator_em(symbol=code.replace('.HK',''))
-            if not df.empty and 'EPS_TTM' in df.columns:
-                eps = df.iloc[0]['EPS_TTM']
-                return float(eps) if eps and eps > 0 else None
-        except Exception:
-            pass
-        return None
-
-    def _get_us_price(self, code: str) -> float:
-        """从akshare获取美股日K最新价"""
-        try:
-            import akshare as ak
-            df = ak.stock_us_daily(symbol=code)
-            if not df.empty:
-                return float(df.iloc[-1]['close'])
-        except Exception:
-            pass
-        return 0
+        self.index_code = CHINA_INTL_INDEX_CODE
+        self.index_name = "中证海外中国互联网50"
+        self.h30533_source = H30533Source()
 
     def run(self, progress_cb=None) -> pd.DataFrame:
         """运行当前快照更新"""
         if progress_cb:
             progress_cb("获取成分股列表...")
 
-        stocks = CHINA_INTL_STOCKS
-        total = len(stocks)
+        snapshot = self.h30533_source.get_snapshot()
+        total = len(snapshot)
 
         if progress_cb:
             progress_cb(f"开始更新 {self.index_name}：{total} 只股票")
 
         results = []
-        for i, (code, name) in enumerate(stocks.items()):
+        for i, constituent in snapshot.iterrows():
+            code = constituent["security_code"]
+            name = constituent["name"]
             if progress_cb and i % 5 == 0:
                 progress_cb(f"更新数据 [{i}/{total}]")
 
-            is_hk = code.endswith('.HK')
-            price = self._get_hk_price(code) if is_hk else self._get_us_price(code)
-            pe = None
-
-            if is_hk:
-                eps = self._get_hk_eps(code)
-                if eps and eps > 0 and price > 0:
-                    pe = round(price / eps, 2)
-            else:
-                # 美股用参考PE
-                pe = US_REF_PE.get(code)
-
-            if pe and pe > 0 and pe < 500:
-                results.append({
-                    "code": code,
-                    "name": name,
-                    "price": round(price, 2),
-                    "pe": pe,
-                })
+            record = self.source.get_current_pe(code)
+            record.update({
+                "code": code,
+                "name": name,
+                "weight": constituent["weight"],
+                "source_type": constituent["source_type"],
+                "constituent_as_of": constituent["as_of"],
+            })
+            results.append(record)
             time.sleep(API_BATCH_DELAY)
 
         if not results:
             return pd.DataFrame()
 
         df = pd.DataFrame(results)
+        aggregate = aggregate_h30533(df)
         today = pd.Timestamp.today().strftime("%Y-%m-%d")
-
-        # 市值加权PE = Σ(MV_i) / Σ(Profit_i)，MV_proxy = price²/pe
-        prices = df["price"].values
-        pes = df["pe"].values
-        mvs = (prices ** 2) / pes
-        total_mv = float(mvs.sum())
-        total_profit = float(total_mv / (float((mvs * pes).sum() / total_mv)))
-        index_pe = float((mvs * pes).sum() / total_mv)
 
         row = {
             "trade_date": today,
-            "total_market_cap": round(total_mv, 6),
-            "total_profit_ttm": round(total_profit, 6),
-            "pe_ratio": index_pe,
-            "stock_count": len(df),
+            "total_market_cap": None,
+            "total_profit_ttm": None,
+            "pe_ratio": aggregate["pe"],
+            "stock_count": aggregate["valid_count"],
+            "weight_coverage": aggregate["weight_coverage"],
+            "negative_profit_count": aggregate["negative_profit_count"],
+            "missing_count": aggregate["missing_count"],
+            "validity_reason": aggregate["reason"],
+            "source_type": snapshot.iloc[0]["source_type"],
+            "constituent_as_of": snapshot.iloc[0]["as_of"],
         }
         pe_df = pd.DataFrame([row])
 
@@ -119,7 +161,7 @@ class USETL:
         self._recompute_us_stats()
 
         if progress_cb:
-            progress_cb(f"✅ 完成：中概互联网 PE = {index_pe:.2f}x（{len(df)}/{total} 只有效）")
+            progress_cb(f"完成：{self.index_name} PE = {aggregate['pe']}（{aggregate['valid_count']}/{total} 只有效）")
 
         return pe_df
 
@@ -135,7 +177,7 @@ class USETL:
         except Exception:
             pass
         stock_pe = self.cache.load_us_stock_pe()
-        constituents = self.source.get_constituents(self.index_code)
+        constituents = self.h30533_source.get_snapshot()
         return {
             "pe_data": pe_df,
             "stock_pe": stock_pe,
@@ -163,138 +205,53 @@ class USETL:
         self.cache.save_us_pe_stats(pe_df[stats_cols])
 
     def run_historical(self, progress_cb=None) -> pd.DataFrame:
-        """构建历史 PE 序列（港股用历史EPS，美股用固定参考PE）"""
-        stocks = CHINA_INTL_STOCKS
-        total = len(stocks)
-
-        if progress_cb:
-            progress_cb(f"拉取行情数据（{total} 只股票）...")
-
-        # 获取各股历史日K
-        all_quotes = {}
-        for i, (code, name) in enumerate(stocks.items()):
-            if progress_cb and i % 5 == 0:
-                progress_cb(f"拉取行情 [{i}/{total}]")
-            if code.endswith('.HK'):
-                quotes = self.source.get_daily_quotes(code)
-            else:
-                quotes = self.source.get_daily_quotes(code)
-            if not quotes.empty:
-                all_quotes[code] = quotes
-            time.sleep(API_BATCH_DELAY)
-
-        if not all_quotes:
+        """Backfill using current constituents, with an explicit caveat."""
+        snapshot = self.h30533_source.get_snapshot()
+        records = []
+        for _, constituent in snapshot.iterrows():
+            record = self.source.get_current_pe(constituent["security_code"])
+            record.update({"weight": constituent["weight"], "constituent_basis": "current_constituents_backfill"})
+            records.append(record)
+        if not records:
             return pd.DataFrame()
 
-        # 港股历史EPS序列
-        eps_series = {}
-        for code in list(stocks.keys()):
-            if not code.endswith('.HK'):
-                continue
-            try:
-                import akshare as ak
-                df = ak.stock_financial_hk_analysis_indicator_em(symbol=code.replace('.HK',''))
-                if df.empty or 'EPS_TTM' not in df.columns:
-                    continue
-                events = []
-                for _, row in df.iterrows():
-                    rd = str(row.get('REPORT_DATE', ''))[:10]
-                    eps = row.get('EPS_TTM')
-                    if not eps or eps <= 0:
-                        continue
-                    try:
-                        rd_ts = pd.Timestamp(rd)
-                    except Exception:
-                        continue
-                    events.append((rd_ts, float(eps)))
-                events.sort()
-                if events:
-                    eps_series[code] = events
-            except Exception:
-                pass
+        # Historical quotes are intentionally not presented as official historical membership.
+        quotes = {}
+        for record in records:
+            daily = self.source.get_daily_quotes(record["code"])
+            if not daily.empty:
+                quotes[record["code"]] = daily
+        if not quotes:
+            return pd.DataFrame()
 
-        if progress_cb:
-            progress_cb(f"共同交易日计算 PE...")
-
-        # 找出共同日期
-        all_dates = set()
-        for q in all_quotes.values():
-            all_dates.update(q["date"].unique().tolist())
-        common_dates = sorted(all_dates)
-
+        input_by_code = {record["code"]: record for record in records}
+        dates = sorted({date for quote in quotes.values() for date in quote["date"].unique()})[-500:]
         results = []
-        for date in common_dates[-500:]:
-            try:
-                td = pd.Timestamp(date)
-            except Exception:
-                continue
-            prices = {}
-            for code, q in all_quotes.items():
-                day_df = q[q["date"] == date]
-                if not day_df.empty:
-                    prices[code] = float(day_df.iloc[-1]["close"])
+        for date in dates:
+            rows = []
+            for code, quote in quotes.items():
+                day = quote[quote["date"] == date]
+                if day.empty:
+                    continue
+                row = dict(input_by_code[code])
+                row["price"] = float(day.iloc[-1]["close"])
+                row["market_cap"] = None
+                rows.append(row)
+            aggregate = aggregate_h30533(pd.DataFrame(rows))
+            results.append({
+                "trade_date": date,
+                "total_market_cap": None,
+                "total_profit_ttm": None,
+                "pe_ratio": aggregate["pe"],
+                "stock_count": aggregate["valid_count"],
+                "weight_coverage": aggregate["weight_coverage"],
+                "negative_profit_count": aggregate["negative_profit_count"],
+                "missing_count": aggregate["missing_count"],
+                "validity_reason": aggregate["reason"],
+                "constituent_basis": "current_constituents_backfill",
+            })
 
-            if not prices or len(prices) < 3:
-                continue
-
-            pe_sum = 0.0
-            mv_sum = 0.0
-            count = 0
-            for code, price in prices.items():
-                if code.endswith('.HK'):
-                    # 港股：用历史EPS
-                    events = eps_series.get(code)
-                    if not events:
-                        continue
-                    best_eps = None
-                    for rd, eps_val in events:
-                        if rd <= td:
-                            best_eps = eps_val
-                        else:
-                            break
-                    if best_eps is None or best_eps <= 0:
-                        continue
-                    pe = price / best_eps
-                else:
-                    # 美股：用固定参考PE
-                    ref_pe = US_REF_PE.get(code)
-                    if ref_pe is None or ref_pe <= 0:
-                        continue
-                    pe = ref_pe
-
-                if pe > 0 and pe < 500:
-                    mv_proxy = (price ** 2) / pe
-                    pe_sum += mv_proxy * pe
-                    mv_sum += mv_proxy
-                    count += 1
-
-            if count > 0 and mv_sum > 0 and count >= 25:
-                index_pe = pe_sum / mv_sum
-                results.append({
-                    "trade_date": date,
-                    "total_market_cap": round(mv_sum, 6),
-                    "total_profit_ttm": round(mv_sum / index_pe, 6),
-                    "pe_ratio": index_pe,
-                    "stock_count": count,
-                })
-
+        pe_df = pd.DataFrame(results)
         if progress_cb:
-            progress_cb(f"✅ 完成历史序列：{len(results)} 个交易日")
-
-        if results:
-            pe_df = pd.DataFrame(results)
-            pe_df = pe_df.sort_values("trade_date").reset_index(drop=True)
-            window = min(500, len(pe_df))
-            pe_df["pe_mean"] = pe_df["pe_ratio"].rolling(window=window, min_periods=max(60, window // 2)).mean()
-            pe_df["pe_std"] = pe_df["pe_ratio"].rolling(window=window, min_periods=max(60, window // 2)).std()
-            pe_df["pe_high_line"] = pe_df["pe_mean"] + pe_df["pe_std"]
-            pe_df["pe_low_line"] = pe_df["pe_mean"] - pe_df["pe_std"]
-            sorted_pe = pe_df["pe_ratio"].sort_values().values
-            pe_df["pe_percentile"] = pe_df["pe_ratio"].apply(
-                lambda x: np.searchsorted(sorted_pe, x, side="left") / len(sorted_pe) * 100
-            )
-            self.cache.save_us_pe_daily(pe_df)
-            stats_cols = ["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]
-            self.cache.save_us_pe_stats(pe_df[stats_cols])
-            return pe_df
-        return pd.DataFrame()
+            progress_cb(f"完成历史序列：{len(pe_df)} 个交易日（current_constituents_backfill）")
+        return pe_df
