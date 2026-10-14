@@ -1,15 +1,15 @@
-"""美股/中概股 PE 计算引擎（基于 EPS_TTM + ADS比例）"""
+"""中概互联网指数 PE 计算引擎（港股 + 美股混合）"""
 import time
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Optional
+from typing import Dict, Optional
 from data_sources.us import USDataSource
 from cache.db import CacheDB
 from config import API_BATCH_DELAY
 
 
 class USETL:
-    """中概互联网指数 PE 计算"""
+    """中概互联网指数 PE 计算（港股 + 美股）"""
 
     def __init__(self, cache: Optional[CacheDB] = None):
         self.cache = cache or CacheDB()
@@ -36,6 +36,7 @@ class USETL:
             data = self.source.get_current_pe(stock["code"])
             if data:
                 data["name"] = stock["name"]
+                data["exchange"] = stock["exchange"]
                 results.append(data)
             time.sleep(API_BATCH_DELAY)
 
@@ -45,12 +46,12 @@ class USETL:
         df = pd.DataFrame(results)
         today = pd.Timestamp.today().strftime("%Y-%m-%d")
 
-        # 计算指数 PE：市值加权 PE（与历史口径一致）
-        valid = df[df["pe"].notna() & (df["pe"] > 0) & (df["pe"] < 200)]
+        # 过滤有效 PE（排除亏损股和异常值）
+        valid = df[df["pe"].notna() & (df["pe"] > 0) & (df["pe"] < 500)]
         if len(valid) > 0:
             prices = valid["price"].values
             pes = valid["pe"].values
-            mvs = (prices ** 2) / pes          # 市值代理（USD）
+            mvs = (prices ** 2) / pes
             index_pe = float((mvs * pes).sum() / mvs.sum())
             total_mv = float(mvs.sum())
             total_profit = float(total_mv / index_pe)
@@ -70,8 +71,6 @@ class USETL:
 
         self.cache.save_us_pe_snapshot(today, pe_df)
         self.cache.save_us_stock_pe(today, df)
-
-        # 重新计算统计指标（加入最新快照后更新）
         self._recompute_us_stats()
 
         if progress_cb:
@@ -83,7 +82,6 @@ class USETL:
     def load_result(self) -> Dict:
         """加载结果（含完整历史序列 + 最新快照）"""
         pe_df = self.cache.load_us_pe_daily()
-        # 合并统计指标
         try:
             stats_df = self.cache.load_us_pe_stats()
             if not stats_df.empty:
@@ -121,7 +119,7 @@ class USETL:
         self.cache.save_us_pe_stats(pe_df[stats_cols])
 
     def run_historical(self, progress_cb=None) -> pd.DataFrame:
-        """构建历史 PE 序列（用近 250 日每日收盘价 + 最新 EPS_TTM）"""
+        """构建历史 PE 序列（港股 + 美股混合，使用各股最新 EPS_TTM）"""
         constituents = self.source.get_constituents(self.index_code)
         stocks = constituents.to_dict("records")
 
@@ -142,19 +140,22 @@ class USETL:
 
         # 获取每只股票的最新 EPS_TTM
         eps_map = {}
-        for code in all_quotes:
+        for stock in stocks:
+            code = stock["code"]
             fin = self.source.get_financials(code)
             if fin.empty:
                 continue
             eps = None
-            for col in ["BASIC_EPS", "EPS_TTM"]:
+            for col in ["EPS_TTM", "BASIC_EPS"]:
                 if col in fin.columns:
                     eps = fin[col].iloc[0]
                     break
             if eps and not pd.isna(eps) and eps > 0:
-                rate = self.source._get_fx_rate()
-                ads_ratio = self.source.ADS_RATIO.get(code, 1)
-                eps_usd = float(eps) * ads_ratio / rate
+                eps_usd = float(eps)
+                if self.source._is_us(code):
+                    rate = self.source._get_fx_rate()
+                    ads_ratio = self.source.ADS_RATIO.get(code, 1)
+                    eps_usd = eps_usd * ads_ratio / rate
                 eps_map[code] = eps_usd
 
         if progress_cb:
@@ -167,7 +168,7 @@ class USETL:
         common_dates = sorted(all_dates)
 
         results = []
-        for date in common_dates[-500:]:  # 最近500个交易日
+        for date in common_dates[-500:]:
             prices = {}
             for code, q in all_quotes.items():
                 day_df = q[q["date"] == date]
@@ -185,23 +186,18 @@ class USETL:
                 if eps_usd is None or eps_usd <= 0:
                     continue
                 pe = price / eps_usd
-                if pe > 0 and pe < 200:
-                    mv_proxy = (price ** 2) / pe  # 市值代理
+                if pe > 0 and pe < 500:
+                    mv_proxy = (price ** 2) / pe
                     pe_sum += mv_proxy * pe
                     mv_sum += mv_proxy
                     count += 1
 
             if count > 0 and mv_sum > 0:
-                # 指数 PE = 总市值 / 总利润（各股市值代理之和 / 各股利润代理之和）
-                # MV_proxy = price²/pe  (USD)，Profit_proxy = MV/pe = price×(price/pe)/pe
-                # 但 price/pe = EPS_USD，所以 Profit_proxy = price × EPS_USD / pe = EPS_USD²
-                # 为得到一致口径，用各股 MV_proxy 求和作为总市值代理，利润代理 = MV_proxy / pe_i 求和
                 index_pe = pe_sum / mv_sum
-                total_profit = mv_sum / index_pe  # 反推总利润（USD）
                 results.append({
                     "trade_date": date,
-                    "total_market_cap": round(mv_sum, 6),   # USD 市值代理
-                    "total_profit_ttm": round(total_profit, 6),  # USD 利润代理
+                    "total_market_cap": round(mv_sum, 6),
+                    "total_profit_ttm": round(mv_sum / index_pe, 6),
                     "pe_ratio": index_pe,
                     "stock_count": count,
                 })
@@ -222,7 +218,6 @@ class USETL:
                 lambda x: np.searchsorted(sorted_pe, x, side="left") / len(sorted_pe) * 100
             )
             self.cache.save_us_pe_daily(pe_df)
-            # 保存统计指标到独立表
             stats_cols = ["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]
             self.cache.save_us_pe_stats(pe_df[stats_cols])
             return pe_df
