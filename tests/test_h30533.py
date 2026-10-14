@@ -196,6 +196,63 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
         self.assertEqual(calls, [{"indexCode": CHINA_INTL_INDEX_CODE}, {"fundCode": CHINA_INTL_FUND_CODE}])
 
+    def test_get_snapshot_deduplicates_and_canonicalizes_issuer_ids(self):
+        def fetcher(url, params):
+            return {
+                "data": {
+                    "indexCode": CHINA_INTL_INDEX_CODE,
+                    "asOfDate": "2026-10-13",
+                    "constituents": [
+                        {"code": "09988", "name": "Alibaba HK", "exchange": "HK",
+                         "weight": 4, "issuer_id": " alibaba "},
+                        {"code": "BABA", "name": "Alibaba ADR", "exchange": "US",
+                         "weight": 3, "issuer_id": "ALIBABA"},
+                    ],
+                },
+            }
+
+        source = H30533Source(fetcher=fetcher, retries=0)
+
+        result = source.get_snapshot()
+
+        self.assertEqual(result["security_code"].tolist(), ["09988.HK"])
+        self.assertEqual(result["issuer_id"].tolist(), ["ALIBABA"])
+
+    def test_invalid_ads_metadata_is_rejected(self):
+        source = H30533Source()
+        result = source.parse_official({
+            "data": {
+                "indexCode": CHINA_INTL_INDEX_CODE,
+                "asOfDate": "2026-10-13",
+                "constituents": [
+                    {"code": "BABA", "name": "Alibaba", "exchange": "US",
+                     "weight": 5, "ads_ratio": 0},
+                    {"code": "PDD", "name": "PDD", "exchange": "US",
+                     "weight": 4, "ads_ratio": "nan"},
+                ],
+            },
+        })
+
+        self.assertTrue(result.empty)
+        self.assertEqual(len(source.rejected_rows), 2)
+        self.assertTrue(all("ads_ratio" in row["reason"] for row in source.rejected_rows))
+
+    def test_blank_issuer_id_is_rejected(self):
+        source = H30533Source()
+        result = source.parse_official({
+            "data": {
+                "indexCode": CHINA_INTL_INDEX_CODE,
+                "asOfDate": "2026-10-13",
+                "constituents": [
+                    {"code": "BABA", "name": "Alibaba", "exchange": "US",
+                     "weight": 5, "issuer_id": "  "},
+                ],
+            },
+        })
+
+        self.assertTrue(result.empty)
+        self.assertEqual(source.rejected_rows[0]["reason"], "blank issuer_id")
+
     def test_get_snapshot_retries_transient_transport_error(self):
         attempts = []
 
@@ -310,7 +367,7 @@ class H30533SourceTests(unittest.TestCase):
         self.assertIn("shares_or_market_cap", record["validity_reason"])
         self.assertIn("profit_ttm", record["validity_reason"])
 
-    def test_current_pe_uses_common_record_and_applies_ads_ratio(self):
+    def test_current_pe_uses_common_record_without_synthetic_shares(self):
         source = USDataSource()
         quotes = pd.DataFrame([{"close": 80.0}])
         financials = pd.DataFrame([{
@@ -325,14 +382,13 @@ class H30533SourceTests(unittest.TestCase):
 
         self.assertEqual(record["price"], 80.0)
         self.assertEqual(record["currency"], "USD")
-        self.assertEqual(record["shares_or_market_cap"], 1.0)
+        self.assertIsNone(record["shares_or_market_cap"])
+        self.assertIn("missing shares_or_market_cap", record["validity_reason"])
         self.assertEqual(record["profit_ttm"], 2.0)
         self.assertEqual(record["financial_as_of"], "2026-09-30")
         self.assertEqual(record["source"], "akshare")
         self.assertEqual(record["ads_ratio"], 8.0)
-        self.assertIsNone(record["validity_reason"])
-        self.assertEqual(record["pe"], 5.0)
-        self.assertEqual(record["eps_ttm_usd"], 16.0)
+        self.assertNotIn("pe", record)
 
     def test_current_pe_returns_structured_diagnostic_for_missing_inputs(self):
         source = USDataSource()

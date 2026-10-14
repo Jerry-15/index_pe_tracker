@@ -1,5 +1,6 @@
 """美股/港股/中概股数据源（基于 akshare + 新浪实时行情）"""
 import time
+import math
 import requests
 import akshare as ak
 import pandas as pd
@@ -45,7 +46,7 @@ class USDataSource:
             missing.append("profit_ttm")
         if financial_as_of is None:
             missing.append("financial_as_of")
-        if ads_ratio is not None and ads_ratio <= 0:
+        if ads_ratio is not None and (not math.isfinite(ads_ratio) or ads_ratio <= 0):
             missing.append("invalid ads_ratio")
         return {
             "code": code,
@@ -224,7 +225,7 @@ class USDataSource:
 
         record = self.build_input_record(
             stock_code, round(price, 2) if price is not None else None, currency,
-            1.0 if eps_ttm is not None else None, eps_ttm, financial_as_of,
+            None, eps_ttm, financial_as_of,
             "akshare", ads_ratio,
         )
         if record["validity_reason"] or eps_ttm is None or eps_ttm <= 0:

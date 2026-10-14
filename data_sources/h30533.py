@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import time
+import math
 from typing import Any, Callable, Mapping, Optional
 
 import pandas as pd
@@ -86,7 +87,7 @@ class H30533Source:
                     result = parser(self.fetcher(url, params))
                     if result.empty:
                         raise H30533SourceError("source returned no valid constituent rows")
-                    return result
+                    return self.deduplicate_issuers(result)
                 except H30533SourceError:
                     raise
                 except requests.RequestException as exc:
@@ -186,7 +187,7 @@ class H30533Source:
                     "weight": weight,
                     "as_of": as_of,
                     "source_type": source_type,
-                    "issuer_id": H30533Source._optional_text(
+                    "issuer_id": H30533Source._issuer_id(
                         raw, "issuer_id", "issuerId", "issuerCode", "issuer_code"
                     ),
                     "security_type": H30533Source._optional_text(
@@ -315,7 +316,19 @@ class H30533Source:
             number = float(found)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"invalid numeric metadata: {found}") from exc
+        if not math.isfinite(number) or number <= 0:
+            raise ValueError(f"invalid ads_ratio: {found}")
         return int(number) if number.is_integer() else number
+
+    @staticmethod
+    def _issuer_id(value: Mapping[str, Any], *keys: str) -> Optional[str]:
+        for key in keys:
+            if key in value and value[key] is not None:
+                issuer_id = str(value[key]).strip().upper()
+                if not issuer_id:
+                    raise ValueError("blank issuer_id")
+                return issuer_id
+        return None
 
     @staticmethod
     def _normalize_date(value: Any) -> str:
