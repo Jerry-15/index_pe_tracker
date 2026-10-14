@@ -33,6 +33,7 @@
   .chart-sm { width: 100%; height: 260px; }
   .footer { text-align: center; color: #aaa; font-size: 12px; padding: 20px; }
   .loading { text-align: center; color: #999; padding: 40px; }
+  .error { color: #b42318; background: #fff1f0; border: 1px solid #ffccc7; border-radius: 6px; padding: 10px 12px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -82,6 +83,19 @@ const COLORS = { pe:'#1f77b4', mean:'#ff7f0e', high:'#d62728', low:'#2ca02c', re
 let indexList = [];
 let currentCode = null;
 let charts = {};
+let manifest = null;
+
+function showError(message) {
+  document.getElementById('coverage').innerHTML = `<span class="error">${message}</span>`;
+  document.getElementById('cards').innerHTML = '';
+}
+
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}（HTTP ${res.status}）`);
+  try { return await res.json(); }
+  catch (e) { throw new Error(`${url}（JSON 格式无效）`); }
+}
 
 function initCharts() {
   charts.main = echarts.init(document.getElementById('chartMain'));
@@ -118,35 +132,43 @@ async function runUpdate() {
   try {
     // 触发 Streamlit 后端更新（静态版通过刷新获取最新数据）
     const res = await fetch('/api/update', {method:'POST'});
+    if (!res.ok) throw new Error(`/api/update（HTTP ${res.status}）`);
     const data = await res.json();
     status.textContent = data.ok ? '✅ 更新完成' : '⚠️ 请稍后重试';
     if (data.ok) loadIndexList();
   } catch(e) {
-    status.textContent = '⚠️ 网络错误';
+    status.textContent = `⚠️ ${e.message || '网络错误'}`;
   }
   btn.disabled = false;
   btn.textContent = '🔄 更新数据';
 }
 
 async function loadIndexList() {
-  const res = await fetch('data/index_list.json');
-  indexList = await res.json();
   const sel = document.getElementById('picker');
-  sel.innerHTML = '';
+  const previous = currentCode || sel.value;
+  try {
+    const manifestData = await fetchJSON('data/manifest.json');
+    indexList = await fetchJSON('data/index_list.json');
+    manifest = manifestData;
+    sel.innerHTML = '';
   const gIndex = document.createElement('optgroup'); gIndex.label = '宽基指数';
   const gIndus = document.createElement('optgroup'); gIndus.label = '申万行业';
-  const gUS = document.createElement('optgroup'); gUS.label = '中概互联网';
+  const gUS = document.createElement('optgroup'); gUS.label = 'H30533';
   indexList.forEach(item => {
     const opt = document.createElement('option');
     opt.value = item.code; opt.textContent = item.name;
     if (item.type === 'index') gIndex.appendChild(opt);
     else if (item.type === 'industry') gIndus.appendChild(opt);
-    else if (item.type === 'us_stock') gUS.appendChild(opt);
+    else if (item.type === 'h30533') gUS.appendChild(opt);
   });
   sel.appendChild(gIndex); sel.appendChild(gIndus); sel.appendChild(gUS);
-  sel.value = '000300';
+  sel.value = indexList.some(item => item.code === previous) ? previous : '000300';
   sel.onchange = () => render(sel.value);
+  document.getElementById('updateStatus').textContent = manifest.generated_at ? `生成于 ${manifest.generated_at}` : '缺少生成时间';
   render(sel.value);
+  } catch (e) {
+    showError(`无法加载数据清单：${e.message}`);
+  }
 }
 
 function num(v, n=2) { return v == null ? '--' : v.toFixed(n); }
@@ -248,26 +270,36 @@ function buildFundOption(rows) {
 async function render(code) {
   currentCode = code;
   const meta = indexList.find(i => i.code === code);
-  const isUS = meta && meta.type === 'us_stock';
+  const isUS = meta && meta.type === 'h30533';
 
-  document.getElementById('coverage').textContent = isUS ? '美股上市中国互联网公司' : (meta ? (meta.type==='index'?'宽基指数':'申万行业') : '');
+  document.getElementById('coverage').textContent = isUS ?
+    `来源：${meta.source_type || '未知'} · 来源日期：${meta.source_date || '--'} · 成分日期：${meta.constituent_as_of || '--'} · 覆盖：${meta.coverage == null ? '--' : (meta.coverage * 100).toFixed(1) + '%'}` :
+    (meta ? (meta.type==='index'?'宽基指数':'申万行业') : '');
   document.getElementById('chartSectionB').style.display = isUS ? 'block' : 'none';
   document.getElementById('btnUpdate').style.display = isUS ? 'inline-block' : 'none';
   document.getElementById('updateStatus').textContent = '';
 
-  const res = await fetch(`data/${code}.json`);
-  const rows = await res.json();
+  const url = `data/${meta && meta.data_file ? meta.data_file : code + '.json'}`;
+  let rows;
+  try { rows = await fetchJSON(url); }
+  catch (e) { showError(`无法加载 ${url}：${e.message}`); return; }
   if (!rows.length) return;
 
   // 渲染个股 PE 快照
-  if (isUS && meta && meta.stock_pe) {
-    renderStockTable(meta.stock_pe);
+  if (isUS && meta && meta.stock_diagnostics) {
+    renderStockTable(meta.stock_diagnostics);
   }
 
   renderCards(meta, rows);
+  if (isUS && (meta.unavailable || meta.validity_reason)) {
+    document.getElementById('coverage').textContent += ` · 当前不可用：${meta.validity_reason || '有效覆盖不足'}`;
+  }
   charts.main.setOption(buildMainOption(meta, rows), true);
   charts.pct.setOption(buildPctOption(rows), true);
   charts.fund.setOption(buildFundOption(rows), true);
+  if (isUS && meta.generated_at) {
+    document.getElementById('coverage').textContent += ` · 生成于 ${meta.generated_at}`;
+  }
 }
 
 initCharts();

@@ -507,6 +507,38 @@ class H30533SourceTests(unittest.TestCase):
         etl.cache.save_us_pe_snapshot.assert_not_called()
         etl.cache.save_us_stock_pe.assert_not_called()
 
+    def test_h30533_all_invalid_rows_persist_diagnostics_and_roundtrip(self):
+        with tempfile.TemporaryDirectory() as directory, patch("etl.pipeline_us.API_BATCH_DELAY", 0):
+            cache = CacheDB(Path(directory) / "cache.db")
+            etl = USETL(cache=cache)
+            etl.h30533_source = MagicMock()
+            etl.source = MagicMock()
+            etl.h30533_source.get_snapshot.return_value = pd.DataFrame([
+                {"security_code": "BABA", "name": "Alibaba", "weight": 0.6,
+                 "source_type": "csi_official", "as_of": "2026-10-13"},
+                {"security_code": "PDD", "name": "PDD", "weight": 0.4,
+                 "source_type": "csi_official", "as_of": "2026-10-13"},
+            ])
+            etl.source.get_current_pe.side_effect = [
+                {"price": 80.0, "validity_reason": "missing profit_ttm"},
+                {"price": 50.0, "profit_ttm": -5.0, "validity_reason": "negative profit"},
+            ]
+
+            result = etl.run()
+            loaded = etl.load_result()
+
+            self.assertIsNone(result.iloc[0]["index_pe"])
+            self.assertEqual(result.iloc[0]["valid_count"], 0)
+            self.assertEqual(result.iloc[0]["missing_count"], 2)
+            self.assertEqual(result.iloc[0]["validity_reason"], "no valid security valuations")
+            self.assertEqual(len(loaded["constituents"]), 2)
+            self.assertEqual(len(loaded["stock_pe"]), 2)
+            self.assertEqual(loaded["pe_data"].iloc[0]["valid_count"], 0)
+            self.assertEqual(
+                loaded["stock_pe"]["validity_reason"].tolist(),
+                ["missing profit_ttm", "negative profit"],
+            )
+
     def test_h30533_persistence_keeps_canonical_metadata_in_all_tables(self):
         with tempfile.TemporaryDirectory() as directory:
             cache = CacheDB(Path(directory) / "cache.db")

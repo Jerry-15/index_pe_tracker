@@ -204,11 +204,27 @@
   "pe_ref": 26.82
  },
  {
-  "code": "CHINA_INTL",
-  "name": "中概互联网",
-  "type": "us_stock",
+  "code": "H30533",
+  "name": "中证海外中国互联网50（H30533）",
+  "type": "h30533",
   "pe_ref": null,
   "stock_pe": [],
-  "last_updated": "2026-10-14"
+  "last_updated": "2026-10-14",
+  "data_file": "CHINA_INTL.json",
+  "source_type": null,
+  "source_date": null,
+  "constituent_as_of": null,
+  "constituent_basis": null,
+  "coverage": null,
+  "counts": {
+   "constituents": 0,
+   "valid": 34.0,
+   "negative_profit": 0,
+   "missing": 0
+  },
+  "validity_reason": null,
+  "stock_diagnostics": [],
+  "unavailable": false,
+  "generated_at": "2026-10-14T15:11:42+00:00"
  }
 ]

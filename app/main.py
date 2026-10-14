@@ -184,9 +184,9 @@ def run_update(index_code, index_name, progress_container):
 
 
 def run_us_update(us_etl, progress_container):
-    """执行中概互联网数据更新"""
+    """执行 H30533 数据更新。"""
     progress_bar = progress_container.progress(0)
-    status_text = progress_container.text("开始更新中概互联网...")
+    status_text = progress_container.text("开始更新 H30533...")
 
     def progress_cb(msg):
         status_text.text(msg)
@@ -200,7 +200,7 @@ def run_us_update(us_etl, progress_container):
     try:
         us_etl.run_historical(progress_cb=progress_cb)
         progress_bar.progress(1.0)
-        status_text.text("✅ 中概互联网更新完成！")
+        status_text.text("✅ H30533 更新完成！")
         time.sleep(0.5)
         st.rerun()
     except Exception as e:
@@ -210,8 +210,8 @@ def run_us_update(us_etl, progress_container):
 
 
 def _render_china_intl(us_etl):
-    """渲染中概互联网估值页面"""
-    st.markdown("### 🌏 中概互联网指数 PE(TTM)")
+    """渲染 H30533 估值页面。"""
+    st.markdown("### 🌏 中证海外中国互联网50（H30533）PE(TTM)")
     st.caption("美股上市中国互联网公司 · 基于 EPS_TTM 计算 · 汇率：USD/CNY")
 
     result = us_etl.load_result()
@@ -254,7 +254,7 @@ def _render_china_intl(us_etl):
                         name="低估线(均值-1σ)", line=dict(color=CHART_COLORS["low_line"], width=1.5, dash="dot"),
                     ))
                 fig.update_layout(
-                    title=f"<b>中概互联网</b> — PE(TTM) 近8年走势",
+                    title=f"<b>H30533</b> — PE(TTM) 近8年走势",
                     xaxis_title="日期", yaxis_title="市盈率 (PE)",
                     height=450, hovermode="x unified",
                     template="plotly_white",
@@ -279,10 +279,10 @@ def _render_china_intl(us_etl):
             - **数据源**：akshare `stock_us_daily`（新浪）+ `stock_financial_us_analysis_indicator_em`（东方财富）
             - **汇率**：中国银行中间价，每日自动获取（默认 7.1771）
             - ⚠️ **注意**：此为简单加权平均 PE，非市值加权，仅供参考；部分公司 EPS_TTM 为年/半年数据，非严格 TTM
-            - 💡 **使用方法**：在左侧选择「中概互联网」后点击「更新数据」
+            - 💡 **使用方法**：在左侧选择「中证海外中国互联网50（H30533）」后点击「更新数据」
             """)
     else:
-        st.info("暂无中概互联网数据，请点击左侧「更新数据」开始拉取。")
+        st.info("暂无 H30533 数据，请点击左侧「更新数据」开始拉取。")
         st.markdown("""
         **首次运行说明：**
         1. 系统将从新浪财经获取各成分股的历史日K线和财务指标
@@ -298,7 +298,7 @@ def _render_china_intl(us_etl):
     # Sidebar: 指数选择 & 操作
     with st.sidebar:
         st.header("⚙️ 设置")
-        index_type = st.radio("指数类型", ["宽基指数", "申万行业", "中概互联网"])
+        index_type = st.radio("指数类型", ["宽基指数", "申万行业", "中证海外中国互联网50（H30533）"])
 
         # 记录行业官方参考PE（当前快照）
         industry_pe_ref = None
@@ -337,7 +337,7 @@ def _render_china_intl(us_etl):
 
         st.divider()
 
-        if index_type == "中概互联网":
+        if index_type == "中证海外中国互联网50（H30533）":
             last_updated = us_etl.cache.get_us_last_updated()
         else:
             last_updated = etl.cache.get_last_updated(index_code)
@@ -350,19 +350,19 @@ def _render_china_intl(us_etl):
         if st.button("🔄 更新数据", use_container_width=True, type="primary"):
             with st.sidebar:
                 progress_container = st.container()
-            if index_type == "中概互联网":
+            if index_type == "中证海外中国互联网50（H30533）":
                 run_us_update(us_etl, progress_container)
             else:
                 run_update(index_code, index_name, progress_container)
 
         st.divider()
-        if index_type != "中概互联网" and st.button("🗑️ 清除缓存", use_container_width=True):
+        if index_type != "中证海外中国互联网50（H30533）" and st.button("🗑️ 清除缓存", use_container_width=True):
             etl.cache.clear_index(index_code)
             st.success("缓存已清除，请重新更新")
             st.rerun()
 
     # Main content
-    if index_type == "中概互联网":
+    if index_type == "中证海外中国互联网50（H30533）":
         _render_china_intl(us_etl)
         return
 

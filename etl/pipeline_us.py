@@ -63,6 +63,7 @@ class USETL:
 
         constituents = self.h30533_source.get_snapshot()
         constituents = constituents.copy()
+        constituents["index_code"] = self.index_code
         constituents["validity_reason"] = constituents.get("validity_reason", pd.Series(index=constituents.index))
         constituents["constituent_as_of"] = constituents["as_of"]
         constituents["snapshot_date"] = constituents["as_of"]
@@ -108,7 +109,33 @@ class USETL:
             time.sleep(API_BATCH_DELAY)
 
         if not results:
-            return pd.DataFrame()
+            today = pd.Timestamp.today().strftime("%Y-%m-%d")
+            diagnostic = pd.DataFrame([{
+                "trade_date": today,
+                "index_code": self.index_code,
+                "index_pe": None,
+                "pe_ratio": None,
+                "earnings_yield": None,
+                "total_market_cap": None,
+                "total_profit_ttm": None,
+                "stock_count": total,
+                "valid_count": 0,
+                "weight_coverage": 0.0,
+                "negative_profit_count": sum(
+                    1 for row in valuation_rows
+                    if row.get("profit_ttm") is not None and row["profit_ttm"] < 0
+                ),
+                "missing_count": total,
+                "source_type": constituents.iloc[0].get("source_type") if total else None,
+                "source_date": constituents.iloc[0].get("as_of") if total else None,
+                "constituent_as_of": constituents.iloc[0].get("as_of") if total else None,
+                "constituent_basis": "H30533",
+                "validity_reason": "no valid security valuations",
+            }])
+            self.cache.save_h30533_snapshot(
+                self.index_code, constituents, diagnostic, pd.DataFrame(valuation_rows)
+            )
+            return diagnostic
 
         df = pd.DataFrame(results)
         today = pd.Timestamp.today().strftime("%Y-%m-%d")
