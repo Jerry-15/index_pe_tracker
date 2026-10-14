@@ -1,6 +1,7 @@
 import unittest
 import sqlite3
 import tempfile
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,9 +14,66 @@ from data_sources.us import USDataSource
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
 from etl.pipeline_us import aggregate_h30533, USETL
 from cache.db import CacheDB
+from scripts import export_static_data
 
 
 class H30533SourceTests(unittest.TestCase):
+    def test_static_export_uses_h30533_snapshot_and_exports_metadata(self):
+        class FakeCache:
+            def load_h30533_snapshot(self, index_code):
+                self.loaded_code = index_code
+                return {
+                    "constituents": pd.DataFrame([{
+                        "security_code": "BABA", "name": "Alibaba", "weight": 0.8,
+                        "source_type": "csi_official", "constituent_as_of": "2026-10-13",
+                    }]),
+                    "daily": pd.DataFrame([{
+                        "trade_date": "2026-10-14", "pe_ratio": None,
+                        "source_type": "csi_official", "source_date": "2026-10-13",
+                        "constituent_as_of": "2026-10-13", "constituent_basis": "official",
+                        "weight_coverage": 0.8, "stock_count": 0, "valid_count": 0,
+                        "negative_profit_count": 1, "missing_count": 0,
+                        "invalid_count": 0, "validity_reason": "coverage below minimum",
+                    }]),
+                    "securities": pd.DataFrame([{
+                        "security_code": "BABA", "name": "Alibaba", "weight": 0.8,
+                        "price": None, "pe": None, "validity_reason": "missing price",
+                    }]),
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            original_out = export_static_data.OUT
+            export_static_data.OUT = Path(directory)
+            try:
+                cache = FakeCache()
+                export_static_data._export_china_intl(cache, None)
+                index_list = json.loads((Path(directory) / "index_list.json").read_text())
+                entries = [item for item in index_list if item["code"] == "H30533"]
+                self.assertEqual(len(entries), 1)
+                entry = entries[0]
+                self.assertEqual(entry["data_file"], "CHINA_INTL.json")
+                self.assertEqual(entry["source_type"], "csi_official")
+                self.assertEqual(entry["constituent_as_of"], "2026-10-13")
+                self.assertEqual(entry["validity_reason"], "coverage below minimum")
+                self.assertEqual(entry["constituent_basis"], "official")
+                self.assertEqual(entry["coverage"], 0.8)
+                self.assertEqual(entry["stock_diagnostics"][0]["validity_reason"], "missing price")
+                rows = json.loads((Path(directory) / entry["data_file"]).read_text())
+                self.assertIsNone(rows[0][1])
+                self.assertEqual(rows[0][14:18], ["csi_official", "2026-10-13", "2026-10-13", "official"])
+            finally:
+                export_static_data.OUT = original_out
+
+    def test_h30533_frontend_uses_current_label_without_legacy_basket_wording(self):
+        root = Path(__file__).parents[1]
+        html = root.joinpath("static/index.html").read_text()
+        streamlit = root.joinpath("app/main.py").read_text()
+        self.assertIn("中证海外中国互联网50（H30533）", html)
+        self.assertIn("中证海外中国互联网50（H30533）", streamlit)
+        for stale in ("23 家美股", "自定义 EPS", "固定参考PE", "US_REF_PE"):
+            self.assertNotIn(stale, html)
+            self.assertNotIn(stale, streamlit)
+
     def test_h30533_snapshot_round_trips_all_valuation_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             cache = CacheDB(Path(directory) / "h30533.db")

@@ -7,6 +7,7 @@
 用法: python scripts/export_static_data.py
 """
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -16,7 +17,6 @@ import pandas as pd
 from cache.db import CacheDB
 from data_sources import get_source
 from config import INDEX_CONFIG
-from etl.pipeline_us import USETL
 
 BASE = Path(__file__).resolve().parent.parent
 OUT = BASE / "static" / "data"
@@ -86,25 +86,16 @@ def export_all():
 
 
 def _export_china_intl(cache: CacheDB, source):
-    """导出中概互联网指数 PE 数据"""
-    from etl.pipeline_us import USETL
-    us_etl = USETL(cache)
-    pe_df = cache.load_us_pe_daily()
-    if pe_df.empty:
+    """导出 H30533 快照及其来源、覆盖率和诊断信息。"""
+    OUT.mkdir(parents=True, exist_ok=True)
+    snapshot = cache.load_h30533_snapshot("H30533")
+    pe_df = snapshot["daily"]
+    constituents = snapshot["constituents"]
+    securities = snapshot["securities"]
+    if pe_df.empty or constituents.empty:
         return
-    # 计算最近一次快照
-    stock_pe = cache.load_us_stock_pe()
-    stock_rows = []
-    if not stock_pe.empty:
-        for _, r in stock_pe.iterrows():
-            stock_rows.append({
-                "code": r["code"],
-                "name": r["name"],
-                "price": r["price"],
-                "pe": r["pe"],
-            })
     latest_row = pe_df.iloc[-1]
-    rows = _to_rows(pe_df)
+    rows = _to_rows(pe_df, h30533=True)
     code = "CHINA_INTL"
     _save(code, rows)
 
@@ -116,14 +107,31 @@ def _export_china_intl(cache: CacheDB, source):
                 idx_list = json.load(f)
         else:
             idx_list = []
+        diagnostics = _records(securities)
         entry = {
-            "code": code,
-            "name": "中概互联网",
-            "type": "us_stock",
+            "code": "H30533",
+            "name": "中证海外中国互联网50（H30533）",
+            "type": "h30533",
             "pe_ref": None,
-            "stock_pe": stock_rows,
+            "data_file": f"{code}.json",
             "last_updated": str(latest_row.get("trade_date", "")),
+            "source_type": _text(latest_row.get("source_type")),
+            "source_date": _text(latest_row.get("source_date")),
+            "constituent_as_of": _text(latest_row.get("constituent_as_of")),
+            "constituent_basis": _text(latest_row.get("constituent_basis")),
+            "coverage": _number(latest_row.get("weight_coverage")),
+            "counts": {
+                "constituents": len(constituents),
+                "valid": _number(latest_row.get("valid_count", latest_row.get("stock_count"))) or 0,
+                "negative_profit": _number(latest_row.get("negative_profit_count")) or 0,
+                "missing": _number(latest_row.get("missing_count")) or 0,
+                "invalid": _number(latest_row.get("invalid_count")) or 0,
+            },
+            "validity_reason": _text(latest_row.get("validity_reason")),
+            "stock_diagnostics": diagnostics,
+            "unavailable": _number(latest_row.get("pe_ratio")) is None,
         }
+        idx_list = [i for i in idx_list if i.get("code") not in ("H30533", "CHINA_INTL")]
         existing = next((i for i in idx_list if i.get("code") == code), None)
         if existing is None:
             idx_list.append(entry)
@@ -135,24 +143,66 @@ def _export_china_intl(cache: CacheDB, source):
         pass
 
 
-def _to_rows(pe_df: pd.DataFrame) -> list:
+def _to_rows(pe_df: pd.DataFrame, h30533: bool = False) -> list:
     """转换为紧凑行数组 [date, pe, mean, high, low, pct, mv, profit]"""
     df = pe_df.sort_values("trade_date").tail(MAX_DAYS)
     rows = []
     for _, r in df.iterrows():
-        mean = float(r["pe_mean"]) if pd.notna(r.get("pe_mean")) else None
-        high = float(r["pe_high_line"]) if pd.notna(r.get("pe_high_line")) else None
-        low = float(r["pe_low_line"]) if pd.notna(r.get("pe_low_line")) else None
-        pct = float(r["pe_percentile"]) if pd.notna(r.get("pe_percentile")) else None
-        mv = float(r["total_market_cap"]) if pd.notna(r.get("total_market_cap")) else None
-        profit = float(r["total_profit_ttm"]) if pd.notna(r.get("total_profit_ttm")) else None
-        rows.append([r["trade_date"], round(float(r["pe_ratio"]), 3), mean, high, low, pct, mv, profit])
+        mean = _number(r.get("pe_mean"))
+        high = _number(r.get("pe_high_line"))
+        low = _number(r.get("pe_low_line"))
+        pct = _number(r.get("pe_percentile"))
+        mv = _number(r.get("total_market_cap"))
+        profit = _number(r.get("total_profit_ttm"))
+        pe = _number(r.get("pe_ratio"))
+        row = [r["trade_date"], round(pe, 3) if pe is not None else None,
+               mean, high, low, pct, mv, profit]
+        if h30533:
+            row.extend([
+                _number(r.get("stock_count", r.get("valid_count"))),
+                _number(r.get("valid_count", r.get("stock_count"))),
+                _number(r.get("weight_coverage")),
+                _number(r.get("negative_profit_count")),
+                _number(r.get("missing_count")),
+                _number(r.get("invalid_count")),
+                _text(r.get("source_type")), _text(r.get("source_date")),
+                _text(r.get("constituent_as_of")), _text(r.get("constituent_basis")),
+                _text(r.get("validity_reason")),
+            ])
+        else:
+            row.extend([_number(r.get("valid_stock_count")),
+                        _number(r.get("profitable_stock_count")),
+                        _number(r.get("coverage_ratio")),
+                        _text(r.get("validity_reason"))])
+        rows.append(row)
     return rows
+
+
+def _number(value):
+    if value is None or pd.isna(value):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+def _text(value):
+    return None if pd.isna(value) else str(value)
+
+
+def _records(frame: pd.DataFrame) -> list:
+    if frame.empty:
+        return []
+    records = frame.where(pd.notna(frame), None).to_dict("records")
+    for record in records:
+        for key, value in record.items():
+            if isinstance(value, (int, float)) and pd.isna(value):
+                record[key] = None
+    return records
 
 
 def _save(code: str, rows: list):
     with open(OUT / f"{code}.json", "w", encoding="utf-8") as f:
-        json.dump(rows, f)
+        json.dump(rows, f, allow_nan=False)
 
 
 def _get_reference_pe(source, index_name: str) -> float | None:
