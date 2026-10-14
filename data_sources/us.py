@@ -35,12 +35,18 @@ class USDataSource:
     ) -> dict[str, Any]:
         """Build a common quote/financial record without sentinel zeros."""
         missing = []
+        if price is None:
+            missing.append("price")
+        if currency is None:
+            missing.append("currency")
         if shares_or_market_cap is None:
             missing.append("shares_or_market_cap")
         if profit_ttm is None:
             missing.append("profit_ttm")
         if financial_as_of is None:
             missing.append("financial_as_of")
+        if ads_ratio is not None and ads_ratio <= 0:
+            missing.append("invalid ads_ratio")
         return {
             "code": code,
             "price": price,
@@ -50,7 +56,10 @@ class USDataSource:
             "financial_as_of": financial_as_of,
             "source": source,
             "ads_ratio": ads_ratio,
-            "validity_reason": "; ".join(f"missing {field}" for field in missing) or None,
+            "validity_reason": "; ".join(
+                f"missing {field}" if field != "invalid ads_ratio" else field
+                for field in missing
+            ) or None,
         }
 
     def _get_fx_rate(self) -> float:
@@ -175,81 +184,73 @@ class USDataSource:
                     else:
                         return pd.DataFrame()
 
-    def get_current_pe(self, stock_code: str) -> Optional[dict]:
-        """获取单只股票的当前 PE（港股直接 price/EPS_TTM，美股按实际币种换算）"""
+    def get_current_pe(self, stock_code: str) -> dict:
+        """获取当前 PE，并始终返回统一的行情/财务输入记录。"""
+        ads_ratio = float(self.ADS_RATIO.get(stock_code.replace(".HK", ""), 1))
+        price = None
+        currency = "HKD" if self._is_hk(stock_code) else "CNY"
+        eps_ttm = None
+        financial_as_of = None
         try:
             quotes = self.get_daily_quotes(stock_code)
-            if quotes.empty:
-                return None
-            price = float(quotes.iloc[-1]["close"])
-
-            fin = self.get_financials(stock_code)
-            if fin.empty:
-                return None
-
-            # 获取 EPS_TTM 和币种
-            eps_ttm = None
-            currency = "CNY"  # 默认人民币（美股中概多数用CNY报表）
-            for col in ["EPS_TTM", "BASIC_EPS"]:
-                if col in fin.columns:
-                    eps_ttm = fin[col].iloc[0]
-                    break
-            if eps_ttm is None or pd.isna(eps_ttm) or eps_ttm <= 0:
-                return None
-            # 检测实际币种
-            if "CURRENCY" in fin.columns and pd.notna(fin["CURRENCY"].iloc[0]):
-                curr_str = str(fin["CURRENCY"].iloc[0])
-                if "美元" in curr_str or "USD" in curr_str.upper():
-                    currency = "USD"
-                elif "港元" in curr_str or "HKD" in curr_str.upper():
-                    currency = "HKD"
-                elif "人民币" in curr_str or "CNY" in curr_str.upper():
-                    currency = "CNY"
-
-            if self._is_hk(stock_code):
-                eps_val = float(eps_ttm)
-                pe = price / eps_val if eps_val > 0 else None
-                return {
-                    "code": stock_code,
-                    "price": round(price, 2),
-                    "currency": "HKD",
-                    "eps_ttm": round(eps_val, 4),
-                    "pe": round(pe, 2) if pe else None,
-                }
-            else:
-                # 美股：根据实际币种决定换算方式
-                rate = self._get_fx_rate()
-                ads_ratio = self.ADS_RATIO.get(stock_code, 1)
-                if currency == "USD":
-                    # EPS 已经是 USD，直接用（不再除以汇率）
-                    eps_usd = float(eps_ttm) * ads_ratio
-                else:
-                    # EPS 为 CNY/HKD，换算为 USD
-                    eps_usd = float(eps_ttm) * ads_ratio / rate
-
-                pe = price / eps_usd if eps_usd > 0 else None
-
-                # EPS 单位修复：akshare 对部分美股中概的 BASIC_EPS 返回了偏小10倍的错误值
-                # 检测方法：CNY币种 + PE>15 → 将 EPS×10（使PE降低到合理范围）
-                # 已验证：BABA(17.45)/PDD(33.61) PE<15不受影响；JD/NTES/GDS/LI 需修正
-                if pe is not None and currency == "CNY" and pe > 15:
-                    alt_pe = price / (eps_usd * 10)
-                    if alt_pe > 0:
-                        eps_usd = eps_usd * 10
-                        pe = alt_pe
-
-                return {
-                    "code": stock_code,
-                    "price": round(price, 2),
-                    "currency": currency,
-                    "eps_ttm_cny": float(eps_ttm) if currency != "USD" else None,
-                    "ads_ratio": ads_ratio,
-                    "eps_ttm_usd": round(eps_usd, 4),
-                    "pe": round(pe, 2) if pe else None,
-                    "rate": rate,
-                }
+            if not quotes.empty and "close" in quotes.columns:
+                value = quotes.iloc[-1]["close"]
+                if pd.notna(value):
+                    price = float(value)
         except Exception:
-            return None
+            pass
+
+        try:
+            fin = self.get_financials(stock_code)
+            if not fin.empty:
+                for col in ("EPS_TTM", "BASIC_EPS"):
+                    if col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        eps_ttm = float(fin.iloc[0][col])
+                        break
+                for col in ("REPORT_DATE", "report_date", "REPORT_PERIOD", "date", "日期"):
+                    if col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        financial_as_of = str(fin.iloc[0][col])
+                        break
+                if "CURRENCY" in fin.columns and pd.notna(fin.iloc[0]["CURRENCY"]):
+                    curr_str = str(fin.iloc[0]["CURRENCY"])
+                    if "美元" in curr_str or "USD" in curr_str.upper():
+                        currency = "USD"
+                    elif "港元" in curr_str or "HKD" in curr_str.upper():
+                        currency = "HKD"
+                    elif "人民币" in curr_str or "CNY" in curr_str.upper():
+                        currency = "CNY"
+        except Exception:
+            pass
+
+        record = self.build_input_record(
+            stock_code, round(price, 2) if price is not None else None, currency,
+            1.0 if eps_ttm is not None else None, eps_ttm, financial_as_of,
+            "akshare", ads_ratio,
+        )
+        if record["validity_reason"] or eps_ttm is None or eps_ttm <= 0:
+            if eps_ttm is not None and eps_ttm <= 0:
+                record["validity_reason"] = "; ".join(
+                    filter(None, [record["validity_reason"], "non_positive profit_ttm"])
+                )
+            return record
+
+        if self._is_hk(stock_code):
+            pe = price / eps_ttm if price is not None else None
+            record.update({"eps_ttm": round(eps_ttm, 4), "pe": round(pe, 2) if pe else None})
+            return record
+
+        rate = self._get_fx_rate()
+        eps_usd = eps_ttm * ads_ratio if currency == "USD" else eps_ttm * ads_ratio / rate
+        pe = price / eps_usd if price is not None and eps_usd > 0 else None
+        if pe is not None and currency == "CNY" and pe > 15:
+            eps_usd *= 10
+            pe = price / eps_usd
+        record.update({
+            "eps_ttm_cny": eps_ttm if currency != "USD" else None,
+            "eps_ttm_usd": round(eps_usd, 4), "pe": round(pe, 2) if pe else None,
+            "rate": rate,
+        })
+        return record
 
     def get_realtime_hk(self, codes: list) -> pd.DataFrame:
         """批量获取港股实时行情（含新浪字段15/16作为参考估值）"""

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 import requests
@@ -308,6 +309,59 @@ class H30533SourceTests(unittest.TestCase):
         self.assertIsNone(record["profit_ttm"])
         self.assertIn("shares_or_market_cap", record["validity_reason"])
         self.assertIn("profit_ttm", record["validity_reason"])
+
+    def test_current_pe_uses_common_record_and_applies_ads_ratio(self):
+        source = USDataSource()
+        quotes = pd.DataFrame([{"close": 80.0}])
+        financials = pd.DataFrame([{
+            "EPS_TTM": 2.0,
+            "CURRENCY": "USD",
+            "REPORT_DATE": "2026-09-30",
+        }])
+
+        with patch.object(source, "get_daily_quotes", return_value=quotes), \
+             patch.object(source, "get_financials", return_value=financials):
+            record = source.get_current_pe("BABA")
+
+        self.assertEqual(record["price"], 80.0)
+        self.assertEqual(record["currency"], "USD")
+        self.assertEqual(record["shares_or_market_cap"], 1.0)
+        self.assertEqual(record["profit_ttm"], 2.0)
+        self.assertEqual(record["financial_as_of"], "2026-09-30")
+        self.assertEqual(record["source"], "akshare")
+        self.assertEqual(record["ads_ratio"], 8.0)
+        self.assertIsNone(record["validity_reason"])
+        self.assertEqual(record["pe"], 5.0)
+        self.assertEqual(record["eps_ttm_usd"], 16.0)
+
+    def test_current_pe_returns_structured_diagnostic_for_missing_inputs(self):
+        source = USDataSource()
+
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame()), \
+             patch.object(source, "get_financials", return_value=pd.DataFrame()):
+            record = source.get_current_pe("BABA")
+
+        self.assertIsNone(record["price"])
+        self.assertIsNone(record["profit_ttm"])
+        self.assertIn("missing price", record["validity_reason"])
+        self.assertIn("missing profit_ttm", record["validity_reason"])
+        self.assertIn("missing financial_as_of", record["validity_reason"])
+        self.assertEqual(record["ads_ratio"], 8.0)
+        self.assertNotIn("pe", record)
+
+    def test_current_pe_reports_invalid_ads_ratio(self):
+        source = USDataSource()
+        with patch.object(source, "ADS_RATIO", {"BABA": 0}):
+            with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+                 patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                     "EPS_TTM": 2.0,
+                     "CURRENCY": "USD",
+                     "REPORT_DATE": "2026-09-30",
+                 }])):
+                record = source.get_current_pe("BABA")
+
+        self.assertIn("invalid ads_ratio", record["validity_reason"])
+        self.assertNotIn("pe", record)
 
 
 if __name__ == "__main__":
