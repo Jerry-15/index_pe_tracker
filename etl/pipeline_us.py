@@ -143,9 +143,11 @@ class USETL:
 
         row = {
             "trade_date": today,
+            "index_code": self.index_code,
             "total_market_cap": None,
             "total_profit_ttm": None,
             "pe_ratio": aggregate["pe"],
+            "earnings_yield": aggregate["earnings_yield"],
             "stock_count": aggregate["valid_count"],
             "weight_coverage": aggregate["weight_coverage"],
             "negative_profit_count": aggregate["negative_profit_count"],
@@ -153,6 +155,7 @@ class USETL:
             "validity_reason": aggregate["reason"],
             "source_type": snapshot.iloc[0]["source_type"],
             "constituent_as_of": snapshot.iloc[0]["as_of"],
+            "source": "H30533 constituent snapshot + USDataSource",
         }
         pe_df = pd.DataFrame([row])
 

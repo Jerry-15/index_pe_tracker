@@ -137,10 +137,13 @@ class USDataSource:
                     })
                     df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
                     df = df.sort_values("date").reset_index(drop=True)
-                    keep = ["date", "open", "high", "low", "close", "volume", "amount"]
+                    keep = ["date", "open", "high", "low", "close", "volume", "amount",
+                            "market_cap", "marketCap", "MARKET_CAP", "total_market_cap",
+                            "shares_outstanding", "outstanding_share", "total_shares", "shares"]
                     existing = [c for c in keep if c in df.columns]
                     df = df[existing]
-                    df["outstanding_share"] = float("nan")
+                    if "outstanding_share" not in df.columns:
+                        df["outstanding_share"] = float("nan")
                     if start_date:
                         df = df[df["date"] >= start_date]
                     if end_date:
@@ -162,10 +165,13 @@ class USDataSource:
                                             "amount": "amount"})
                     df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
                     df = df.sort_values("date").reset_index(drop=True)
-                    keep = ["date", "open", "high", "low", "close", "volume", "amount"]
+                    keep = ["date", "open", "high", "low", "close", "volume", "amount",
+                            "market_cap", "marketCap", "MARKET_CAP", "total_market_cap",
+                            "shares_outstanding", "outstanding_share", "total_shares", "shares"]
                     existing = [c for c in keep if c in df.columns]
                     df = df[existing]
-                    df["outstanding_share"] = float("nan")
+                    if "outstanding_share" not in df.columns:
+                        df["outstanding_share"] = float("nan")
                     if start_date:
                         df = df[df["date"] >= start_date]
                     if end_date:
@@ -216,6 +222,8 @@ class USDataSource:
         eps_ttm = None
         profit_ttm = None
         financial_as_of = None
+        market_cap = None
+        verified_shares = None
         unsupported_currency = None
         try:
             quotes = self.get_daily_quotes(stock_code)
@@ -223,6 +231,16 @@ class USDataSource:
                 value = quotes.iloc[-1]["close"]
                 if pd.notna(value):
                     price = float(value)
+                quote = quotes.iloc[-1]
+                for col in ("market_cap", "marketCap", "MARKET_CAP", "total_market_cap"):
+                    if col in quote.index and pd.notna(quote[col]):
+                        market_cap = float(quote[col])
+                        break
+                for col in ("verified_shares", "shares_outstanding", "outstanding_share",
+                            "total_shares", "shares"):
+                    if col in quote.index and pd.notna(quote[col]):
+                        verified_shares = float(quote[col])
+                        break
         except Exception:
             pass
 
@@ -239,6 +257,15 @@ class USDataSource:
                 ):
                     if col in fin.columns and pd.notna(fin.iloc[0][col]):
                         profit_ttm = float(fin.iloc[0][col])
+                        break
+                for col in ("market_cap", "marketCap", "MARKET_CAP", "total_market_cap", "总市值"):
+                    if market_cap is None and col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        market_cap = float(fin.iloc[0][col])
+                        break
+                for col in ("verified_shares", "shares_outstanding", "outstanding_share",
+                            "total_shares", "shares", "TOTAL_SHARES", "总股本"):
+                    if verified_shares is None and col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        verified_shares = float(fin.iloc[0][col])
                         break
                 for col in ("REPORT_DATE", "report_date", "REPORT_PERIOD", "date", "日期"):
                     if col in fin.columns and pd.notna(fin.iloc[0][col]):
@@ -260,7 +287,7 @@ class USDataSource:
 
         record = self.build_input_record(
             stock_code, round(price, 2) if price is not None else None, currency,
-            None, profit_ttm, financial_as_of,
+            market_cap if market_cap is not None else verified_shares, profit_ttm, financial_as_of,
             "akshare", ads_ratio,
         )
         if unsupported_currency:
@@ -270,6 +297,8 @@ class USDataSource:
             ]))
         record["eps_ttm"] = round(eps_ttm, 4) if eps_ttm is not None else None
         record["eps"] = record["eps_ttm"]
+        record["market_cap"] = market_cap
+        record["verified_shares"] = verified_shares
         pe_inputs_missing = any(
             record[field] is None
             for field in ("price", "currency", "shares_or_market_cap", "ads_ratio")

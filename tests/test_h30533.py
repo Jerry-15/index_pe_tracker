@@ -101,6 +101,44 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]["stock_count"], 1)
         etl.h30533_source.get_snapshot.assert_called_once_with()
         etl.source.get_current_pe.assert_called_once_with("BABA")
+
+    def test_current_pe_maps_verified_market_inputs_from_quote_and_financial_records(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+            "close": 80.0, "market_cap": 800.0, "shares_outstanding": 10.0,
+        }])), patch.object(source, "get_financials", return_value=pd.DataFrame([{
+            "EPS_TTM": 2.0, "CURRENCY": "USD", "REPORT_DATE": "2026-09-30",
+            "NET_PROFIT_TTM": 80.0,
+        }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertEqual(record["market_cap"], 800.0)
+        self.assertEqual(record["verified_shares"], 10.0)
+        self.assertEqual(record["profit_ttm"], 80.0)
+
+    def test_pipeline_aggregates_snapshot_records_with_negative_profit_count(self):
+        etl = USETL(cache=MagicMock())
+        etl.h30533_source = MagicMock()
+        etl.source = MagicMock()
+        etl.h30533_source.get_snapshot.return_value = pd.DataFrame([
+            {"security_code": "BABA", "name": "Alibaba", "weight": 0.8,
+             "source_type": "csi_official", "as_of": "2026-10-13"},
+            {"security_code": "PDD", "name": "PDD", "weight": 0.2,
+             "source_type": "csi_official", "as_of": "2026-10-13"},
+        ])
+        etl.source.get_current_pe.side_effect = [
+            {"price": 80.0, "market_cap": 800.0, "profit_ttm": 80.0},
+            {"price": 50.0, "market_cap": 500.0, "profit_ttm": -5.0},
+        ]
+
+        with patch.object(etl, "_recompute_us_stats"):
+            result = etl.run()
+
+        self.assertAlmostEqual(result.iloc[0]["pe_ratio"], 12.5)
+        self.assertAlmostEqual(result.iloc[0]["earnings_yield"], 0.08)
+        self.assertEqual(result.iloc[0]["negative_profit_count"], 1)
+        self.assertEqual(result.iloc[0]["index_code"], CHINA_INTL_INDEX_CODE)
+        self.assertEqual(result.iloc[0]["source_type"], "csi_official")
     def test_official_payload_must_identify_h30533(self):
         source = H30533Source()
 
