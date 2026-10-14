@@ -93,6 +93,38 @@ class CacheDB:
                     error_msg TEXT,
                     created_at REAL
                 );
+
+                CREATE TABLE IF NOT EXISTS us_pe_daily (
+                    trade_date TEXT NOT NULL,
+                    pe_ratio REAL,
+                    total_market_cap REAL,
+                    stock_count INTEGER,
+                    updated_at REAL,
+                    PRIMARY KEY (trade_date)
+                );
+
+                CREATE TABLE IF NOT EXISTS us_pe_stats (
+                    trade_date TEXT NOT NULL,
+                    pe_mean REAL,
+                    pe_std REAL,
+                    pe_high_line REAL,
+                    pe_low_line REAL,
+                    pe_percentile REAL,
+                    updated_at REAL,
+                    PRIMARY KEY (trade_date)
+                );
+
+                CREATE TABLE IF NOT EXISTS us_stock_pe (
+                    snapshot_date TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    name TEXT,
+                    price REAL,
+                    eps_ttm_cny REAL,
+                    eps_ttm_usd REAL,
+                    pe REAL,
+                    updated_at REAL,
+                    PRIMARY KEY (snapshot_date, code)
+                );
             """)
 
     def save_quotes(self, code: str, df: pd.DataFrame):
@@ -300,3 +332,128 @@ class CacheDB:
             conn.execute("DELETE FROM index_pe_daily WHERE index_code=?", (index_code,))
             conn.execute("DELETE FROM index_pe_stats WHERE index_code=?", (index_code,))
             conn.execute("DELETE FROM index_constituents WHERE index_code=?", (index_code,))
+
+    def save_us_pe_daily(self, pe_df: pd.DataFrame):
+        """保存中概互联网每日 PE 序列"""
+        if pe_df.empty:
+            return
+        with self._conn() as conn:
+            conn.execute("DELETE FROM us_pe_daily")
+            records = []
+            for _, row in pe_df.iterrows():
+                records.append((
+                    row["trade_date"],
+                    row.get("pe_ratio"),
+                    row.get("total_market_cap"),
+                    row.get("stock_count"),
+                    time.time(),
+                ))
+            conn.executemany(
+                "INSERT INTO us_pe_daily VALUES (?,?,?,?,?)", records
+            )
+
+    def load_us_pe_daily(self) -> pd.DataFrame:
+        """加载中概互联网每日 PE 序列"""
+        with self._conn() as conn:
+            return pd.read_sql_query(
+                "SELECT * FROM us_pe_daily ORDER BY trade_date", conn
+            )
+
+    def save_us_pe_snapshot(self, date: str, df: pd.DataFrame):
+        """保存中概互联网当日指数 PE 快照"""
+        if df.empty:
+            return
+        with self._conn() as conn:
+            conn.execute("DELETE FROM us_pe_daily WHERE trade_date=?", (date,))
+            records = []
+            for _, row in df.iterrows():
+                records.append((
+                    row["trade_date"],
+                    row.get("pe_ratio"),
+                    row.get("total_market_cap"),
+                    row.get("stock_count"),
+                    time.time(),
+                ))
+            conn.executemany(
+                "INSERT INTO us_pe_daily VALUES (?,?,?,?,?)", records
+            )
+
+    def load_us_pe_snapshot(self) -> pd.DataFrame:
+        """加载最近一次中概互联网指数 PE 快照"""
+        with self._conn() as conn:
+            return pd.read_sql_query(
+                "SELECT * FROM us_pe_daily ORDER BY trade_date DESC LIMIT 1", conn
+            )
+
+    def save_us_pe_stats(self, stats_df: pd.DataFrame):
+        """保存中概互联网统计指标"""
+        if stats_df.empty:
+            return
+        with self._conn() as conn:
+            conn.execute("DELETE FROM us_pe_stats")
+            records = []
+            for _, row in stats_df.iterrows():
+                records.append((
+                    row["trade_date"],
+                    row.get("pe_mean"),
+                    row.get("pe_std"),
+                    row.get("pe_high_line"),
+                    row.get("pe_low_line"),
+                    row.get("pe_percentile"),
+                    time.time(),
+                ))
+            conn.executemany(
+                "INSERT INTO us_pe_stats VALUES (?,?,?,?,?,?,?)", records
+            )
+
+    def load_us_pe_stats(self) -> pd.DataFrame:
+        """加载中概互联网统计指标"""
+        with self._conn() as conn:
+            return pd.read_sql_query(
+                "SELECT * FROM us_pe_stats ORDER BY trade_date", conn
+            )
+
+    def save_us_stock_pe(self, date: str, df: pd.DataFrame):
+        """保存中概股单只股票 PE 快照"""
+        if df.empty:
+            return
+        with self._conn() as conn:
+            conn.execute("DELETE FROM us_stock_pe WHERE snapshot_date=?", (date,))
+            records = []
+            for _, row in df.iterrows():
+                records.append((
+                    date,
+                    row["code"],
+                    row.get("name", ""),
+                    row.get("price"),
+                    row.get("eps_ttm_cny"),
+                    row.get("eps_ttm_usd"),
+                    row.get("pe"),
+                    row.get("pb"),
+                    time.time(),
+                ))
+            conn.executemany(
+                "INSERT INTO us_stock_pe VALUES (?,?,?,?,?,?,?,?,?)", records
+            )
+
+    def load_us_stock_pe(self) -> pd.DataFrame:
+        """加载最新一期的中概股 PE 快照"""
+        with self._conn() as conn:
+            latest = conn.execute(
+                "SELECT MAX(snapshot_date) FROM us_stock_pe"
+            ).fetchone()
+            if not latest or not latest[0]:
+                return pd.DataFrame()
+            df = pd.read_sql_query(
+                "SELECT * FROM us_stock_pe WHERE snapshot_date=?",
+                conn, params=[latest[0]]
+            )
+            return df
+
+    def get_us_last_updated(self) -> Optional[str]:
+        """获取中概股最近更新日期"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT MAX(trade_date) FROM us_pe_daily"
+            ).fetchone()
+            return row[0] if row and row[0] else None

@@ -33,6 +33,13 @@ INDEX_CONFIG = {
     },
 }
 
+# 中概互联网指数配置
+CHINA_INTL_CONFIG = {
+    "code": "CHINA_INTL",
+    "name": "中概互联网",
+    "description": "美股/港股上市的中国互联网公司指数",
+}
+
 # 默认参数
 DEFAULT_LOOKBACK_DAYS = 2000  # 约8年交易日
 ROLLING_WINDOW = 2000         # 滚动窗口用于均值/标准差计算
@@ -59,4 +66,31 @@ CHART_COLORS = {
     "low_line": "#2ca02c",
     "percentile": "#9467bd",
     "reference": "#7f7f7f",
+}
+
+# 中概互联网成分股（股票代码 -> 名称）
+CHINA_INTL_STOCKS = {
+    "BABA": "阿里巴巴",
+    "PDD": "拼多多",
+    "JD": "京东",
+    "BIDU": "百度",
+    "NTES": "网易",
+    "MOMO": "陌陌",
+    "TCEHY": "腾讯",
+    "NCTY": "世纪华通",
+    "VIPS": "唯品会",
+    "WB": "微博",
+    "IQ": "爱奇艺",
+    "FENG": "凤凰卫视",
+    "TCOM": "携程",
+    "LI": "理想汽车",
+    "NIO": "蔚来",
+    "XPEV": "小鹏汽车",
+    "TIGR": "老虎证券",
+    "FUTU": "富途控股",
+    "SINA": "新浪",
+    "SOHU": "搜狐",
+    "YUMC": "百胜中国",
+    "GDS": "世纪互联",
+    "VNET": "网宿科技",
 }

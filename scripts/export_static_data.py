@@ -16,6 +16,7 @@ import pandas as pd
 from cache.db import CacheDB
 from data_sources import get_source
 from config import INDEX_CONFIG
+from etl.pipeline_us import USETL
 
 BASE = Path(__file__).resolve().parent.parent
 OUT = BASE / "static" / "data"
@@ -78,7 +79,54 @@ def export_all():
     with open(OUT / "index_list.json", "w", encoding="utf-8") as f:
         json.dump(index_list, f, ensure_ascii=False, indent=1)
 
+    # 导出中概互联网数据
+    _export_china_intl(cache, source)
+
     print(f"导出完成: {len(index_list)} 个指数/行业 -> {OUT}")
+
+
+def _export_china_intl(cache: CacheDB, source):
+    """导出中概互联网指数 PE 数据"""
+    pe_df = cache.load_us_pe_daily()
+    if pe_df.empty:
+        return
+    # 合并统计指标
+    try:
+        stats_df = cache.load_us_pe_stats()
+        if not stats_df.empty:
+            pe_df = pe_df.merge(
+                stats_df[["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]],
+                on="trade_date", how="left",
+            )
+    except Exception:
+        pass
+    latest_row = pe_df.iloc[-1]
+    rows = _to_rows(pe_df)
+    code = "CHINA_INTL"
+    _save(code, rows)
+
+    # 更新 index_list
+    try:
+        list_path = OUT / "index_list.json"
+        if list_path.exists():
+            with open(list_path, "r", encoding="utf-8") as f:
+                idx_list = json.load(f)
+        else:
+            idx_list = []
+        existing = [i for i in idx_list if i.get("code") == code]
+        if not existing:
+            idx_list.append({
+                "code": code,
+                "name": "中概互联网",
+                "type": "us_stock",
+                "pe_ref": None,
+                "stock_pe": [],
+                "last_updated": str(latest_row.get("trade_date", "")),
+            })
+            with open(list_path, "w", encoding="utf-8") as f:
+                json.dump(idx_list, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
 
 
 def _to_rows(pe_df: pd.DataFrame) -> list:

@@ -46,13 +46,20 @@
     <label for="picker">选择板块/行业：</label>
     <select id="picker"><option>加载中...</option></select>
     <span id="coverage" style="font-size:12px;color:#888;"></span>
+    <button id="btnUpdate" onclick="runUpdate()" style="padding:8px 16px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer;font-size:13px;">🔄 更新数据</button>
+    <span id="updateStatus" style="font-size:12px;color:#888;"></span>
   </div>
 
   <div class="cards" id="cards"></div>
 
-  <div class="chart-box">
+  <div class="chart-box" id="chartSectionA">
     <h3>指数 PE(TTM) 走势（灰色带 = 均值±1σ 正常区间）</h3>
     <div id="chartMain" class="chart"></div>
+  </div>
+
+  <div class="chart-box" id="chartSectionB" style="display:none;">
+    <h3>成分股 PE 快照</h3>
+    <div id="chartStockPE" style="padding:10px;"></div>
   </div>
 
   <div class="chart-box">
@@ -84,6 +91,42 @@ function initCharts() {
 }
 
 function fmtDate(d) { return d.slice(0,10); }
+function fmtNum(v, n=2) { return v == null ? '--' : Number(v).toFixed(n); }
+
+// 中概成分股表格渲染
+function renderStockTable(stockRows) {
+  const div = document.getElementById('chartStockPE');
+  if (!stockRows || !stockRows.length) { div.innerHTML = '<p style="color:#999;padding:20px">暂无个股数据</p>'; return; }
+  // 按 PE 排序
+  stockRows.sort((a,b) => (a.pe??999) - (b.pe??999));
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:13px">';
+  html += '<tr style="background:#f5f6fa"><th>代码</th><th>名称</th><th>价格(USD)</th><th>PE(TTM)</th><th>PB</th></tr>';
+  for (const s of stockRows) {
+    const peCell = s.pe != null ? `<span class="${s.pe > 50 ? 'up' : s.pe < 20 ? 'down' : ''}">${fmtNum(s.pe)}</span>` : '--';
+    html += `<tr style="border-bottom:1px solid #eee"><td style="padding:6px 10px;font-weight:600">${s.code}</td><td style="padding:6px 10px">${s.name}</td><td style="padding:6px 10px">${fmtNum(s.price,2)}</td><td style="padding:6px 10px;text-align:right">${peCell}</td><td style="padding:6px 10px;text-align:right">${s.pb != null ? s.pb.toFixed(2) : '--'}</td></tr>`;
+  }
+  html += '</table>';
+  div.innerHTML = html;
+}
+
+async function runUpdate() {
+  const btn = document.getElementById('btnUpdate');
+  const status = document.getElementById('updateStatus');
+  btn.disabled = true;
+  btn.textContent = '⏳ 更新中...';
+  status.textContent = '';
+  try {
+    // 触发 Streamlit 后端更新（静态版通过刷新获取最新数据）
+    const res = await fetch('/api/update', {method:'POST'});
+    const data = await res.json();
+    status.textContent = data.ok ? '✅ 更新完成' : '⚠️ 请稍后重试';
+    if (data.ok) loadIndexList();
+  } catch(e) {
+    status.textContent = '⚠️ 网络错误';
+  }
+  btn.disabled = false;
+  btn.textContent = '🔄 更新数据';
+}
 
 async function loadIndexList() {
   const res = await fetch('data/index_list.json');
@@ -92,12 +135,15 @@ async function loadIndexList() {
   sel.innerHTML = '';
   const gIndex = document.createElement('optgroup'); gIndex.label = '宽基指数';
   const gIndus = document.createElement('optgroup'); gIndus.label = '申万行业';
+  const gUS = document.createElement('optgroup'); gUS.label = '中概互联网';
   indexList.forEach(item => {
     const opt = document.createElement('option');
     opt.value = item.code; opt.textContent = item.name;
-    (item.type === 'index' ? gIndex : gIndus).appendChild(opt);
+    if (item.type === 'index') gIndex.appendChild(opt);
+    else if (item.type === 'industry') gIndus.appendChild(opt);
+    else if (item.type === 'us_stock') gUS.appendChild(opt);
   });
-  sel.appendChild(gIndex); sel.appendChild(gIndus);
+  sel.appendChild(gIndex); sel.appendChild(gIndus); sel.appendChild(gUS);
   sel.value = '000300';
   sel.onchange = () => render(sel.value);
   render(sel.value);
@@ -202,10 +248,22 @@ function buildFundOption(rows) {
 async function render(code) {
   currentCode = code;
   const meta = indexList.find(i => i.code === code);
-  document.getElementById('coverage').textContent = meta ? (meta.type==='index'?'宽基指数':'申万行业') : '';
+  const isUS = meta && meta.type === 'us_stock';
+
+  document.getElementById('coverage').textContent = isUS ? '美股上市中国互联网公司' : (meta ? (meta.type==='index'?'宽基指数':'申万行业') : '');
+  document.getElementById('chartSectionB').style.display = isUS ? 'block' : 'none';
+  document.getElementById('btnUpdate').style.display = isUS ? 'inline-block' : 'none';
+  document.getElementById('updateStatus').textContent = '';
+
   const res = await fetch(`data/${code}.json`);
   const rows = await res.json();
   if (!rows.length) return;
+
+  // 渲染个股 PE 快照
+  if (isUS && meta && meta.stock_pe) {
+    renderStockTable(meta.stock_pe);
+  }
+
   renderCards(meta, rows);
   charts.main.setOption(buildMainOption(meta, rows), true);
   charts.pct.setOption(buildPctOption(rows), true);
