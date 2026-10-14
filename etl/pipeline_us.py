@@ -64,6 +64,8 @@ class USETL:
         constituents = self.h30533_source.get_snapshot()
         constituents = constituents.copy()
         constituents["validity_reason"] = constituents.get("validity_reason", pd.Series(index=constituents.index))
+        constituents["constituent_as_of"] = constituents["as_of"]
+        constituents["snapshot_date"] = constituents["as_of"]
         total = len(constituents)
 
         if progress_cb:
@@ -138,6 +140,7 @@ class USETL:
         }
         pe_df = pd.DataFrame([row])
 
+        # Persist the source snapshot and all enriched security rows together.
         self.cache.save_h30533_snapshot(self.index_code, constituents, pe_df, pd.DataFrame(valuation_rows))
         self._recompute_us_stats()
 

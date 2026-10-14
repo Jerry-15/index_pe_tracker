@@ -132,6 +132,7 @@ class CacheDB:
                     snapshot_date TEXT NOT NULL, index_code TEXT NOT NULL, security_code TEXT NOT NULL,
                     name TEXT, exchange TEXT, weight REAL, issuer_id TEXT, security_type TEXT,
                     ads_ratio REAL, source_type TEXT, as_of TEXT, constituent_as_of TEXT,
+                    is_duplicate_issuer INTEGER,
                     raw_metadata TEXT, validity_reason TEXT,
                     PRIMARY KEY (snapshot_date, index_code, security_code)
                 );
@@ -163,7 +164,8 @@ class CacheDB:
                 "snapshot_date": "TEXT", "index_code": "TEXT", "security_code": "TEXT",
                 "name": "TEXT", "exchange": "TEXT", "weight": "REAL", "issuer_id": "TEXT",
                 "security_type": "TEXT", "ads_ratio": "REAL", "source_type": "TEXT",
-                "as_of": "TEXT", "constituent_as_of": "TEXT", "raw_metadata": "TEXT",
+                "as_of": "TEXT", "constituent_as_of": "TEXT", "is_duplicate_issuer": "INTEGER",
+                "raw_metadata": "TEXT",
                 "validity_reason": "TEXT",
             },
             "h30533_daily_valuation": {
@@ -205,7 +207,7 @@ class CacheDB:
             "h30533_constituent_snapshot": {
                 "snapshot_date", "index_code", "security_code", "name", "exchange", "weight",
                 "issuer_id", "security_type", "ads_ratio", "source_type", "as_of",
-                "constituent_as_of", "raw_metadata", "validity_reason",
+                "constituent_as_of", "is_duplicate_issuer", "raw_metadata", "validity_reason",
             },
             "h30533_daily_valuation": {
                 "trade_date", "index_code", "pe_ratio", "index_pe", "earnings_yield",
@@ -252,6 +254,11 @@ class CacheDB:
         if constituents.empty or daily.empty or securities.empty:
             raise ValueError("H30533 snapshot parts must not be empty")
         constituents = self._h30533_aliases(constituents, {"as_of": "constituent_as_of"})
+        if "as_of" in constituents and "constituent_as_of" in constituents:
+            as_of = constituents["as_of"].astype("string")
+            constituent_as_of = constituents["constituent_as_of"].astype("string")
+            if as_of.fillna(constituent_as_of).ne(constituent_as_of.fillna(as_of)).any():
+                raise ValueError("H30533 constituent_as_of conflicts with as_of")
         daily = self._h30533_aliases(daily, {"pe_ratio": "index_pe", "stock_count": "valid_count"})
         securities = self._h30533_aliases(securities, {"pe": "index_pe", "data_source": "source"})
         frames = (constituents, daily, securities)
@@ -268,6 +275,9 @@ class CacheDB:
         daily_constituent_dates = set(daily["constituent_as_of"].dropna().astype(str))
         if len(constituent_dates) != 1 or daily_constituent_dates != constituent_dates:
             raise ValueError("H30533 constituent_as_of mismatch")
+        security_dates = set(securities["source_date"].dropna().astype(str))
+        if len(security_dates) != 1:
+            raise ValueError("H30533 security source_date mismatch")
         constituents = constituents.copy()
         daily = daily.copy()
         securities = securities.copy()

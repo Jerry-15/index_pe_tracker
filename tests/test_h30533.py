@@ -499,6 +499,13 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]["negative_profit_count"], 1)
         self.assertEqual(result.iloc[0]["index_code"], CHINA_INTL_INDEX_CODE)
         self.assertEqual(result.iloc[0]["source_type"], "csi_official")
+        saved = etl.cache.save_h30533_snapshot.call_args.args
+        self.assertEqual(saved[0], CHINA_INTL_INDEX_CODE)
+        self.assertEqual(saved[1]["constituent_as_of"].tolist(), ["2026-10-13", "2026-10-13"])
+        self.assertEqual(saved[2].iloc[0]["constituent_as_of"], "2026-10-13")
+        self.assertEqual(saved[3]["source_date"].tolist(), ["2026-10-13", "2026-10-13"])
+        etl.cache.save_us_pe_snapshot.assert_not_called()
+        etl.cache.save_us_stock_pe.assert_not_called()
 
     def test_h30533_persistence_keeps_canonical_metadata_in_all_tables(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -541,27 +548,103 @@ class H30533SourceTests(unittest.TestCase):
             self.assertEqual(result["securities"].iloc[0]["index_pe"], 10.0)
             self.assertEqual(result["securities"].iloc[0]["extra_security"], "kept")
 
-    def test_h30533_migrates_legacy_tables_before_full_snapshot_round_trip(self):
+    def test_h30533_persists_duplicate_issuer_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = CacheDB(Path(directory) / "cache.db")
+            constituents = pd.DataFrame([
+                {"index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA",
+                 "weight": 0.6, "as_of": "2026-10-13", "source_type": "fixture",
+                 "issuer_id": "ALIBABA", "is_duplicate_issuer": False},
+                {"index_code": CHINA_INTL_INDEX_CODE, "security_code": "9988.HK",
+                 "weight": 0.4, "as_of": "2026-10-13", "source_type": "fixture",
+                 "issuer_id": "ALIBABA", "is_duplicate_issuer": True},
+            ])
+            daily = pd.DataFrame([{
+                "trade_date": "2026-10-13", "index_code": CHINA_INTL_INDEX_CODE,
+                "index_pe": 10, "source_type": "fixture", "source_date": "2026-10-13",
+                "constituent_as_of": "2026-10-13",
+            }])
+            securities = pd.DataFrame([{
+                "index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA",
+                "weight": 0.6, "source_type": "fixture", "source_date": "2026-10-13",
+            }])
+
+            cache.save_h30533_snapshot(CHINA_INTL_INDEX_CODE, constituents, daily, securities)
+            loaded = cache.load_h30533_snapshot(CHINA_INTL_INDEX_CODE)["constituents"]
+
+            self.assertEqual(
+                loaded.set_index("security_code")["is_duplicate_issuer"].to_dict(),
+                {"BABA": 0, "9988.HK": 1},
+            )
+            with sqlite3.connect(Path(directory) / "cache.db") as conn:
+                columns = {row[1] for row in conn.execute(
+                    "PRAGMA table_info(h30533_constituent_snapshot)")}
+            self.assertIn("is_duplicate_issuer", columns)
+
+    def test_h30533_rejects_conflicting_constituent_dates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = CacheDB(Path(directory) / "cache.db")
+            constituents = pd.DataFrame([{
+                "index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA", "weight": 1,
+                "as_of": "2026-10-13", "constituent_as_of": "2026-10-12",
+                "source_type": "fixture",
+            }])
+            daily = pd.DataFrame([{
+                "trade_date": "2026-10-13", "index_code": CHINA_INTL_INDEX_CODE,
+                "index_pe": 10, "source_type": "fixture", "source_date": "2026-10-13",
+                "constituent_as_of": "2026-10-13",
+            }])
+            securities = pd.DataFrame([{
+                "index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA", "weight": 1,
+                "source_type": "fixture", "source_date": "2026-10-13",
+            }])
+
+            with self.assertRaisesRegex(ValueError, "constituent_as_of"):
+                cache.save_h30533_snapshot(CHINA_INTL_INDEX_CODE, constituents, daily, securities)
+
+    def test_h30533_rejects_inconsistent_security_source_dates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = CacheDB(Path(directory) / "cache.db")
+            constituents = pd.DataFrame([{
+            "index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA", "weight": 0.5,
+            "as_of": "2026-10-13", "source_type": "fixture",
+            }, {
+            "index_code": CHINA_INTL_INDEX_CODE, "security_code": "PDD", "weight": 0.5,
+            "as_of": "2026-10-13", "source_type": "fixture",
+            }])
+            daily = pd.DataFrame([{
+            "trade_date": "2026-10-13", "index_code": CHINA_INTL_INDEX_CODE,
+            "index_pe": 10, "source_type": "fixture", "source_date": "2026-10-13",
+            "constituent_as_of": "2026-10-13",
+            }])
+            securities = pd.DataFrame([
+            {"index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA", "weight": 0.5,
+             "source_type": "fixture", "source_date": "2026-10-13"},
+            {"index_code": CHINA_INTL_INDEX_CODE, "security_code": "PDD", "weight": 0.5,
+             "source_type": "fixture", "source_date": "2026-10-12"},
+            ])
+
+            with self.assertRaisesRegex(ValueError, "security source_date"):
+                cache.save_h30533_snapshot(CHINA_INTL_INDEX_CODE, constituents, daily, securities)
+
+    def test_h30533_migrates_every_core_column_and_preserves_legacy_extensions(self):
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / "cache.db"
             with sqlite3.connect(db_path) as conn:
                 conn.executescript("""
                     CREATE TABLE h30533_constituent_snapshot (
                         snapshot_date TEXT NOT NULL, index_code TEXT NOT NULL,
-                        security_code TEXT NOT NULL, name TEXT, weight REAL,
-                        source_type TEXT, as_of TEXT, extra_constituent TEXT,
+                        security_code TEXT NOT NULL, extra_constituent TEXT,
                         PRIMARY KEY (snapshot_date, index_code, security_code)
                     );
                     CREATE TABLE h30533_daily_valuation (
                         trade_date TEXT NOT NULL, index_code TEXT NOT NULL,
-                        pe_ratio REAL, stock_count INTEGER, source_type TEXT,
-                        source_date TEXT, extra_daily TEXT,
+                        extra_daily TEXT,
                         PRIMARY KEY (trade_date, index_code)
                     );
                     CREATE TABLE h30533_security_valuation (
                         snapshot_date TEXT NOT NULL, index_code TEXT NOT NULL,
-                        security_code TEXT NOT NULL, name TEXT, weight REAL,
-                        source_type TEXT, source_date TEXT, extra_security TEXT,
+                        security_code TEXT NOT NULL, extra_security TEXT,
                         PRIMARY KEY (snapshot_date, index_code, security_code)
                     );
                 """)
@@ -569,29 +652,49 @@ class H30533SourceTests(unittest.TestCase):
             cache = CacheDB(db_path)
             constituents = pd.DataFrame([{
                 "index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA",
-                "name": "Alibaba", "weight": 0.8, "source_type": "fixture",
-                "as_of": "2026-10-13", "extra_constituent": "kept",
+                "name": "Alibaba", "exchange": "US", "weight": 0.8,
+                "issuer_id": "ALIBABA", "security_type": "ADR", "ads_ratio": 1.0,
+                "source_type": "fixture", "as_of": "2026-10-13",
+                "constituent_as_of": "2026-10-13", "is_duplicate_issuer": False,
+                "raw_metadata": {"fund": "000906"},
+                "validity_reason": "ok", "extra_constituent": "kept",
             }])
             daily = pd.DataFrame([{
                 "index_code": CHINA_INTL_INDEX_CODE, "trade_date": "2026-10-13",
-                "index_pe": 10.0, "stock_count": 1, "source_type": "fixture",
-                "source_date": "2026-10-13", "constituent_as_of": "2026-10-13",
-                "extra_daily": "kept",
+                "pe_ratio": 10.0, "index_pe": 10.0, "earnings_yield": 0.1,
+                "total_market_cap": 800.0, "total_profit_ttm": 80.0,
+                "stock_count": 1, "valid_count": 1, "weight_coverage": 0.8,
+                "negative_profit_count": 0, "missing_count": 0,
+                "source_type": "fixture", "source_date": "2026-10-13",
+                "constituent_as_of": "2026-10-13", "constituent_basis": "H30533",
+                "validity_reason": "ok", "updated_at": 123.0, "extra_daily": "kept",
             }])
             securities = pd.DataFrame([{
                 "index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA",
-                "name": "Alibaba", "weight": 0.8, "source_type": "fixture",
-                "source_date": "2026-10-13", "index_pe": 10.0,
-                "extra_security": "kept",
+                "name": "Alibaba", "issuer_id": "ALIBABA", "weight": 0.8,
+                "price": 80.0, "currency": "USD", "market_cap": 800.0,
+                "verified_shares": 10.0, "profit_ttm": 80.0, "earnings_yield": 0.1,
+                "index_pe": 10.0, "pe": 10.0, "financial_as_of": "2026-09-30",
+                "source_date": "2026-10-13", "source_type": "fixture",
+                "source": "fixture", "data_source": "fixture",
+                "validity_reason": "ok", "extra_security": "kept",
             }])
 
             cache.save_h30533_snapshot(CHINA_INTL_INDEX_CODE, constituents, daily, securities)
             result = cache.load_h30533_snapshot(CHINA_INTL_INDEX_CODE)
 
+            self.assertEqual(result["constituents"].iloc[0]["constituent_as_of"], "2026-10-13")
+            self.assertEqual(result["constituents"].iloc[0]["is_duplicate_issuer"], 0)
+            self.assertEqual(result["constituents"].iloc[0]["raw_metadata"], {"fund": "000906"})
             self.assertEqual(result["constituents"].iloc[0]["extra_constituent"], "kept")
             self.assertEqual(result["daily"].iloc[0]["index_pe"], 10.0)
+            self.assertEqual(result["daily"].iloc[0]["valid_count"], 1)
+            self.assertEqual(result["daily"].iloc[0]["constituent_as_of"], "2026-10-13")
             self.assertEqual(result["daily"].iloc[0]["extra_daily"], "kept")
+            self.assertEqual(result["securities"].iloc[0]["currency"], "USD")
             self.assertEqual(result["securities"].iloc[0]["index_pe"], 10.0)
+            self.assertEqual(result["securities"].iloc[0]["source"], "fixture")
+            self.assertEqual(result["securities"].iloc[0]["data_source"], "fixture")
             self.assertEqual(result["securities"].iloc[0]["extra_security"], "kept")
 
             with sqlite3.connect(db_path) as conn:
