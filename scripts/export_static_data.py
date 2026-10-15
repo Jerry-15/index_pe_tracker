@@ -9,6 +9,8 @@
 import json
 import math
 import sys
+import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,27 +28,33 @@ OUT = BASE / "static" / "data"
 # 每个指数最多导出的天数（近10年，控制前端数据量）
 MAX_DAYS = 2500
 H30533_DATA_FILE = "CHINA_INTL.json"
+SCHEMA_VERSION = 2
 
 
 def export_all():
     cache = CacheDB()
-    source = get_source()
+    try:
+        source = get_source()
+    except Exception:
+        # H30533 is snapshot-only; an unavailable legacy source must not populate it.
+        source = None
     OUT.mkdir(parents=True, exist_ok=True)
     # Preserve the delivery catalog; the H30533 exporter replaces only its own entry.
     index_list = _read_index_list()
     for item in index_list:
         item.setdefault("data_file", f"{item['code']}.json")
 
+    generated_at = datetime.now(timezone.utc).isoformat()
     for name, cfg in INDEX_CONFIG.items():
-        _export_regular(cache, source, index_list, cfg["code"], name, "index")
+        _export_regular(cache, source, index_list, cfg["code"], name, "index", generated_at)
 
     try:
-        industry_reference = source.get_industry_reference()
+        industry_reference = source.get_industry_reference() if source is not None else pd.DataFrame()
     except Exception:
         industry_reference = pd.DataFrame()
     for _, row in industry_reference.iterrows():
         _export_regular(cache, source, index_list, row["code"], row["name"], "industry",
-                        row.get("pe_ttm"))
+                        generated_at, row.get("pe_ttm"))
 
     _export_china_intl(cache, None, index_list)
 
@@ -55,12 +63,12 @@ def export_all():
     artifacts = ["index_list.json"]
     artifacts.extend(item["data_file"] for item in index_list
                      if item.get("data_file") and item["data_file"] not in artifacts)
-    _write_manifest(artifacts)
+    _write_manifest(artifacts, index_list, generated_at)
 
     print(f"导出完成: {len(index_list)} 个指数/行业 -> {OUT}")
 
 
-def _export_regular(cache, source, index_list, code, name, item_type, pe_ref=None):
+def _export_regular(cache, source, index_list, code, name, item_type, generated_at, pe_ref=None):
     pe_df = cache.load_pe_daily(code)
     stats_df = cache.load_pe_stats(code)
     if pe_df.empty:
@@ -70,13 +78,19 @@ def _export_regular(cache, source, index_list, code, name, item_type, pe_ref=Non
             stats_df[["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]],
             on="trade_date", how="left",
         )
-    rows = _to_rows(pe_df)
+    source_name = source.__class__.__name__ if source is not None else None
+    pe_df["source"] = pe_df.get("source", source_name)
+    pe_df["data_source"] = pe_df.get("data_source", source_name)
+    pe_df["quality_level"] = pe_df.get("quality_level", "C")
+    pe_df["validity"] = pe_df.get("validity", pe_df.get("validity_reason", "unknown"))
+    rows = _to_rows(pe_df, generated_at=generated_at)
     if not rows:
         return
     _save(f"{code}.json", rows)
     entry = {"code": code, "name": name, "type": item_type,
              "pe_ref": _get_reference_pe(source, name) if item_type == "index" else _number(pe_ref),
              "data_file": f"{code}.json"}
+    entry.update(_metadata(pe_df.iloc[-1], generated_at))
     _replace_catalog_entry(index_list, entry, code)
 
 
@@ -101,11 +115,14 @@ def _export_china_intl(cache: CacheDB, source, index_list=None):
     owns_index_list = index_list is None
     index_list = index_list if index_list is not None else _read_index_list()
     latest_row = pe_df.iloc[-1] if not pe_df.empty else pd.Series(dtype=object)
-    rows = _to_rows(pe_df, h30533=True) if not pe_df.empty and not constituents.empty else []
+    generated_at = datetime.now(timezone.utc).isoformat()
+    financial_dates = securities.get("financial_as_of", pd.Series(dtype=object)).dropna()
+    if not financial_dates.empty:
+        pe_df["financial_as_of"] = str(financial_dates.max())
+    rows = (_to_rows(pe_df, h30533=True, generated_at=generated_at)
+            if not pe_df.empty and not constituents.empty else [])
     _save(H30533_DATA_FILE, rows)
     source_type = _text(latest_row.get("source_type"))
-    financial_dates = securities.get("financial_as_of", pd.Series(dtype=object)).dropna()
-    generated_at = datetime.now(timezone.utc).isoformat()
     entry = {
         "code": "H30533", "name": "中证海外中国互联网50（H30533）", "type": "h30533",
         "pe_ref": None, "data_file": H30533_DATA_FILE,
@@ -126,6 +143,12 @@ def _export_china_intl(cache: CacheDB, source, index_list=None):
         "stock_diagnostics": _records(securities),
         "unavailable": not bool(rows) or _number(latest_row.get("pe_ratio")) is None,
     }
+    entry["quality_level"] = _text(latest_row.get("quality_level"))
+    entry["data_source"] = _text(latest_row.get("data_source"))
+    entry["quality_level"] = entry["quality_level"] or "C"
+    entry["source"] = entry["source"] or "unavailable"
+    entry["data_source"] = entry["data_source"] or "unavailable"
+    entry["validity"] = entry["validity"] or "snapshot unavailable"
     _replace_catalog_entry(index_list, entry, "H30533", "CHINA_INTL")
     if owns_index_list:
         with open(OUT / "index_list.json", "w", encoding="utf-8") as f:
@@ -141,12 +164,39 @@ def _read_index_list():
         return json.load(f)
 
 
-def _write_manifest(artifacts):
+def _write_manifest(artifacts, index_list=None, generated_at=None):
+    index_list = index_list or []
+    date_ranges = {}
+    for item in index_list:
+        path = OUT / item["data_file"]
+        rows = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        dates = [row[0] for row in rows if row and row[0]]
+        date_ranges[item["code"]] = {
+            "start": min(dates) if dates else None,
+            "end": max(dates) if dates else None,
+        }
     with open(OUT / "manifest.json", "w", encoding="utf-8") as f:
-        json.dump({"generated_at": datetime.now(timezone.utc).isoformat(), "artifacts": artifacts}, f, indent=1)
+        json.dump({"schema_version": SCHEMA_VERSION,
+                   "source_revision": _source_revision(),
+                   "generated_at": generated_at or datetime.now(timezone.utc).isoformat(),
+                   "item_count": len(index_list), "date_ranges": date_ranges,
+                   "artifacts": artifacts}, f, indent=1)
 
 
-def _to_rows(pe_df: pd.DataFrame, h30533: bool = False) -> list:
+def _source_revision():
+    revision = os.environ.get("GIT_COMMIT")
+    if revision:
+        return revision
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=BASE, text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def _to_rows(pe_df: pd.DataFrame, h30533: bool = False, generated_at=None) -> list:
     """转换为紧凑行数组 [date, pe, mean, high, low, pct, mv, profit]"""
     df = pe_df.sort_values("trade_date").tail(MAX_DAYS)
     rows = []
@@ -176,9 +226,30 @@ def _to_rows(pe_df: pd.DataFrame, h30533: bool = False) -> list:
             row.extend([_number(r.get("valid_stock_count")),
                         _number(r.get("profitable_stock_count")),
                         _number(r.get("coverage_ratio")),
-                        _text(r.get("validity_reason"))])
+                         _text(r.get("validity_reason"))])
+        row.extend([
+            _text(r.get("quality_level")) or "C",
+            _text(r.get("source", r.get("source_type"))) or "unavailable",
+            _text(r.get("data_source", r.get("source"))) or "unavailable",
+            generated_at or _text(r.get("generated_at")),
+            _number(r.get("coverage", r.get("coverage_ratio", r.get("weight_coverage")))),
+            _text(r.get("financial_as_of")),
+            _text(r.get("validity", r.get("validity_reason"))) or "unknown",
+        ])
         rows.append(row)
     return rows
+
+
+def _metadata(row, generated_at):
+    return {
+        "quality_level": _text(row.get("quality_level")) or "C",
+        "source": _text(row.get("source", row.get("source_type"))) or "unavailable",
+        "data_source": _text(row.get("data_source", row.get("source"))) or "unavailable",
+        "generated_at": generated_at,
+        "coverage": _number(row.get("coverage", row.get("coverage_ratio", row.get("weight_coverage")))),
+        "financial_as_of": _text(row.get("financial_as_of")),
+        "validity": _text(row.get("validity", row.get("validity_reason"))) or "unknown",
+    }
 
 
 def _number(value):

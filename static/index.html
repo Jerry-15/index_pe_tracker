@@ -51,6 +51,7 @@
   </div>
 
   <div class="cards" id="cards"></div>
+  <div class="chart-box" id="qualityPanel"></div>
 
   <div class="chart-box" id="chartSectionA">
     <h3>指数 PE(TTM) 走势（灰色带 = 均值±1σ 正常区间）</h3>
@@ -205,6 +206,13 @@ function renderCards(meta, rows) {
   `;
 }
 
+function renderQualityPanel(meta) {
+  document.getElementById('qualityPanel').innerHTML = `<h3>数据质量</h3><p style="font-size:13px;line-height:1.8">
+    等级：<b>${meta.quality_level || '--'}</b> · 来源：${meta.source || meta.data_source || '--'} ·
+    生成：${meta.generated_at || '--'}<br>覆盖：${meta.coverage == null ? '--' : (meta.coverage * 100).toFixed(1) + '%'} ·
+    财务截至：${meta.financial_as_of || '--'} · 有效性：${meta.validity || '--'}</p>`;
+}
+
 function buildMainOption(meta, rows) {
   const dates = rows.map(r => fmtDate(r[0]));
   const pe = rows.map(r => r[1]);
@@ -310,6 +318,7 @@ async function render(code) {
   }
 
   renderCards(meta, rows);
+  renderQualityPanel(meta);
   charts.main.setOption(buildMainOption(meta, rows), true);
    charts.pct.setOption(buildPctOption(rows), true);
    charts.fund.setOption(buildFundOption(rows), true);

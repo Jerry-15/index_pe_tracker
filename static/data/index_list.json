@@ -3,239 +3,477 @@
   "code": "000300",
   "name": "沪深300",
   "type": "index",
-  "pe_ref": 12.41,
-  "data_file": "000300.json"
+  "pe_ref": 12.32,
+  "data_file": "000300.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "000905",
   "name": "中证500",
   "type": "index",
-  "pe_ref": 24.48,
-  "data_file": "000905.json"
+  "pe_ref": 23.76,
+  "data_file": "000905.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "399001",
   "name": "深证成指",
   "type": "index",
   "pe_ref": null,
-  "data_file": "399001.json"
+  "data_file": "399001.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801010",
   "name": "农林牧渔",
   "type": "industry",
-  "pe_ref": 32.15,
-  "data_file": "801010.json"
+  "pe_ref": 31.27,
+  "data_file": "801010.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801030",
   "name": "基础化工",
   "type": "industry",
-  "pe_ref": 20.79,
-  "data_file": "801030.json"
+  "pe_ref": 20.12,
+  "data_file": "801030.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801040",
   "name": "钢铁",
   "type": "industry",
-  "pe_ref": 20.06,
-  "data_file": "801040.json"
+  "pe_ref": 19.59,
+  "data_file": "801040.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801050",
   "name": "有色金属",
   "type": "industry",
-  "pe_ref": 15.45,
-  "data_file": "801050.json"
+  "pe_ref": 14.87,
+  "data_file": "801050.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801080",
   "name": "电子",
   "type": "industry",
-  "pe_ref": 43.86,
-  "data_file": "801080.json"
+  "pe_ref": 42.51,
+  "data_file": "801080.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801880",
   "name": "汽车",
   "type": "industry",
-  "pe_ref": 21.23,
-  "data_file": "801880.json"
+  "pe_ref": 20.81,
+  "data_file": "801880.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801110",
   "name": "家用电器",
   "type": "industry",
-  "pe_ref": 14.87,
-  "data_file": "801110.json"
+  "pe_ref": 14.75,
+  "data_file": "801110.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801120",
   "name": "食品饮料",
   "type": "industry",
-  "pe_ref": 19.99,
-  "data_file": "801120.json"
+  "pe_ref": 20.18,
+  "data_file": "801120.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801130",
   "name": "纺织服饰",
   "type": "industry",
-  "pe_ref": 19.59,
-  "data_file": "801130.json"
+  "pe_ref": 19.22,
+  "data_file": "801130.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801140",
   "name": "轻工制造",
   "type": "industry",
-  "pe_ref": 21.47,
-  "data_file": "801140.json"
+  "pe_ref": 20.97,
+  "data_file": "801140.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801150",
   "name": "医药生物",
   "type": "industry",
   "pe_ref": 27.36,
-  "data_file": "801150.json"
+  "data_file": "801150.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801160",
   "name": "公用事业",
   "type": "industry",
-  "pe_ref": 20.49,
-  "data_file": "801160.json"
+  "pe_ref": 20.15,
+  "data_file": "801160.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801170",
   "name": "交通运输",
   "type": "industry",
-  "pe_ref": 14.94,
-  "data_file": "801170.json"
+  "pe_ref": 14.49,
+  "data_file": "801170.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801180",
   "name": "房地产",
   "type": "industry",
-  "pe_ref": 8.54,
-  "data_file": "801180.json"
+  "pe_ref": 8.33,
+  "data_file": "801180.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801200",
   "name": "商贸零售",
   "type": "industry",
-  "pe_ref": 20.82,
-  "data_file": "801200.json"
+  "pe_ref": 20.4,
+  "data_file": "801200.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801210",
   "name": "社会服务",
   "type": "industry",
-  "pe_ref": 29.16,
-  "data_file": "801210.json"
+  "pe_ref": 28.44,
+  "data_file": "801210.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801780",
   "name": "银行",
   "type": "industry",
-  "pe_ref": 7.61,
-  "data_file": "801780.json"
+  "pe_ref": 7.63,
+  "data_file": "801780.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801790",
   "name": "非银金融",
   "type": "industry",
-  "pe_ref": 7.41,
-  "data_file": "801790.json"
+  "pe_ref": 7.43,
+  "data_file": "801790.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801230",
   "name": "综合",
   "type": "industry",
-  "pe_ref": 64.11,
-  "data_file": "801230.json"
+  "pe_ref": 62.13,
+  "data_file": "801230.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801710",
   "name": "建筑材料",
   "type": "industry",
-  "pe_ref": 28.76,
-  "data_file": "801710.json"
+  "pe_ref": 27.69,
+  "data_file": "801710.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801720",
   "name": "建筑装饰",
   "type": "industry",
-  "pe_ref": 10.53,
-  "data_file": "801720.json"
+  "pe_ref": 10.29,
+  "data_file": "801720.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801730",
   "name": "电力设备",
   "type": "industry",
-  "pe_ref": 23.33,
-  "data_file": "801730.json"
+  "pe_ref": 22.83,
+  "data_file": "801730.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801890",
   "name": "机械设备",
   "type": "industry",
-  "pe_ref": 33.13,
-  "data_file": "801890.json"
+  "pe_ref": 32.0,
+  "data_file": "801890.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801740",
   "name": "国防军工",
   "type": "industry",
-  "pe_ref": 49.31,
-  "data_file": "801740.json"
+  "pe_ref": 47.39,
+  "data_file": "801740.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801750",
   "name": "计算机",
   "type": "industry",
-  "pe_ref": 38.52,
-  "data_file": "801750.json"
+  "pe_ref": 37.75,
+  "data_file": "801750.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801760",
   "name": "传媒",
   "type": "industry",
-  "pe_ref": 24.95,
-  "data_file": "801760.json"
+  "pe_ref": 24.57,
+  "data_file": "801760.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801770",
   "name": "通信",
   "type": "industry",
-  "pe_ref": 26.68,
-  "data_file": "801770.json"
+  "pe_ref": 26.1,
+  "data_file": "801770.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801950",
   "name": "煤炭",
   "type": "industry",
-  "pe_ref": 17.68,
-  "data_file": "801950.json"
+  "pe_ref": 17.43,
+  "data_file": "801950.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801960",
   "name": "石油石化",
   "type": "industry",
-  "pe_ref": 13.68,
-  "data_file": "801960.json"
+  "pe_ref": 13.44,
+  "data_file": "801960.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801970",
   "name": "环保",
   "type": "industry",
-  "pe_ref": 17.9,
-  "data_file": "801970.json"
+  "pe_ref": 17.41,
+  "data_file": "801970.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "801980",
   "name": "美容护理",
   "type": "industry",
-  "pe_ref": 26.46,
-  "data_file": "801980.json"
+  "pe_ref": 26.22,
+  "data_file": "801980.json",
+  "quality_level": "C",
+  "source": "SinaDataSource",
+  "data_source": "SinaDataSource",
+  "generated_at": "2026-10-15T10:51:52.296633+00:00",
+  "coverage": null,
+  "financial_as_of": null,
+  "validity": "unknown"
  },
  {
   "code": "H30533",
@@ -244,7 +482,7 @@
   "pe_ref": null,
   "data_file": "CHINA_INTL.json",
   "last_updated": "2026-10-14",
-  "generated_at": "2026-10-15T03:44:57.618487+00:00",
+  "generated_at": "2026-10-15T10:52:28.636398+00:00",
   "source": "etf_disclosure",
   "date": "2026-06-30",
   "constituent_as_of": "2026-06-30",
@@ -258,7 +496,7 @@
    "missing": 2.0,
    "invalid": 0
   },
-  "validity": null,
+  "validity": "snapshot unavailable",
   "stock_diagnostics": [
    {
     "snapshot_date": "2026-06-30",
@@ -1009,6 +1247,8 @@
     "validity_reason": "missing ads_ratio"
    }
   ],
-  "unavailable": false
+  "unavailable": false,
+  "quality_level": "C",
+  "data_source": "unavailable"
  }
 ]
