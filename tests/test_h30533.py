@@ -222,6 +222,41 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
         self.assertEqual(calls, [{"indexCode": CHINA_INTL_INDEX_CODE}, {"fundCode": CHINA_INTL_FUND_CODE}])
 
+    def test_source_metadata_is_reset_between_attempts_and_etf_gets_its_own_provenance(self):
+        payload = {
+            "fundCode": CHINA_INTL_FUND_CODE,
+            "as_of": "2026-10-10",
+            "holdings": [{"code": "00700", "name": "Tencent", "market": "HK", "weight_pct": 7.1}],
+        }
+        seen = []
+
+        def fetcher(url, params):
+            seen.append((url, dict(source.last_source_meta)))
+            if params.get("indexCode"):
+                source.last_source_meta = {"source_url": "https://stale.test", "fetched_at": "stale"}
+                raise RuntimeError("CSI unavailable")
+            return payload
+
+        source = H30533Source(fetcher=fetcher, retries=0,
+                              official_url="https://official.test", etf_url="https://etf.test")
+        result = source.get_snapshot()
+
+        self.assertEqual(seen[0][1], {})
+        self.assertEqual(seen[1][1], {})
+        self.assertEqual(result.iloc[0]["source_url"], "https://etf.test")
+        self.assertNotEqual(result.iloc[0]["fetched_at"], "stale")
+
+    def test_source_errors_include_attempt_provenance(self):
+        source = H30533Source(fetcher=lambda url, params: (_ for _ in ()).throw(RuntimeError("down")),
+                              retries=0, official_url="https://official.test", etf_url="https://etf.test")
+
+        with self.assertRaises(H30533SourceError) as raised:
+            source.get_snapshot()
+
+        error = raised.exception.details["errors"][0]
+        self.assertEqual(error["source_url"], "https://official.test")
+        self.assertTrue(error["fetched_at"])
+
     def test_get_snapshot_falls_back_after_official_wrong_index_payload(self):
         official_payload = {
             "data": {
@@ -825,6 +860,44 @@ class H30533SourceTests(unittest.TestCase):
 
         self.assertEqual(record["currency"], "EUR")
         self.assertIn("unsupported currency: EUR", record["validity_reason"])
+
+    def test_current_pe_excludes_pe_when_quotes_disagree(self):
+        source = USDataSource(secondary_quote_fetcher=lambda code: 100.0)
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+             patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                 "EPS_TTM": 2.0, "NET_PROFIT_TTM": 80.0, "CURRENCY": "USD",
+                 "REPORT_DATE": "2026-09-30",
+             }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertTrue(record["quote_disagreement"])
+        self.assertIn("quote_disagreement", record["validity_reason"])
+        self.assertNotIn("pe", record)
+
+    def test_current_pe_direct_reported_market_cap_wins_over_shares(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+            "close": 80.0, "market_cap": 900.0, "shares_outstanding": 10.0,
+        }])), patch.object(source, "get_financials", return_value=pd.DataFrame([{
+            "EPS_TTM": 2.0, "NET_PROFIT_TTM": 80.0, "CURRENCY": "USD",
+            "REPORT_DATE": "2026-09-30",
+        }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertEqual(record["market_cap"], 900.0)
+        self.assertEqual(record["market_cap_method"], "reported_market_cap")
+
+    def test_current_pe_uses_documented_financial_stale_diagnostic(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+             patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                 "EPS_TTM": 2.0, "NET_PROFIT_TTM": 80.0, "CURRENCY": "USD",
+                 "REPORT_DATE": "2020-01-01",
+             }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertIn("financial_stale", record["validity_reason"])
+        self.assertNotIn("stale_financial", record["validity_reason"])
 
 
 if __name__ == "__main__":

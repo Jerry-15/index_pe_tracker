@@ -8,6 +8,19 @@ from typing import Any, Optional
 from config import API_RETRY_TIMES, API_RETRY_DELAY
 
 
+def _append_reason(existing: Optional[str], reason: str) -> str:
+    return "; ".join(filter(None, (existing, reason)))
+
+
+def _is_financial_stale(value: Optional[str]) -> bool:
+    if not value:
+        return True
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return True
+    return (pd.Timestamp.now(tz="UTC").tz_localize(None) - parsed).days > 365
+
+
 class USDataSource:
     """美股数据获取：行情 + 财务指标（EPS_TTM / ADS校正）"""
 
@@ -21,9 +34,10 @@ class USDataSource:
         "SINA": 1, "SOHU": 1, "YUMC": 1, "GDS": 1, "VNET": 1,
     }
 
-    def __init__(self):
+    def __init__(self, secondary_quote_fetcher=None):
         self._fx_rate: Optional[float] = None
         self._fx_cached_at: float = 0
+        self.secondary_quote_fetcher = secondary_quote_fetcher
 
     @staticmethod
     def build_input_record(
@@ -203,6 +217,27 @@ class USDataSource:
             if quotes.empty:
                 return None
             price = float(quotes.iloc[-1]["close"])
+            quote_row = quotes.iloc[-1]
+            market_cap = None
+            verified_shares = None
+            reported_market_cap = False
+            for col in ("market_cap", "marketCap", "MARKET_CAP", "total_market_cap"):
+                if col in quote_row.index and pd.notna(quote_row[col]):
+                    market_cap = float(quote_row[col])
+                    reported_market_cap = True
+                    break
+            for col in ("verified_shares", "shares_outstanding", "outstanding_share", "total_shares", "shares"):
+                if col in quote_row.index and pd.notna(quote_row[col]):
+                    verified_shares = float(quote_row[col])
+                    break
+            secondary_price = None
+            if self.secondary_quote_fetcher is not None:
+                try:
+                    secondary_price = self.secondary_quote_fetcher(stock_code)
+                    if secondary_price is not None:
+                        secondary_price = float(secondary_price)
+                except (TypeError, ValueError):
+                    secondary_price = None
 
             fin = self.get_financials(stock_code)
             if fin.empty:
@@ -217,6 +252,17 @@ class USDataSource:
                     break
             if eps_ttm is None or pd.isna(eps_ttm) or eps_ttm <= 0:
                 return None
+            profit_ttm = None
+            for col in ("NET_PROFIT_TTM", "PROFIT_TTM", "TTM_NET_PROFIT", "profit_ttm", "net_profit_ttm"):
+                if col in fin.columns and pd.notna(fin.iloc[0][col]):
+                    profit_ttm = float(fin.iloc[0][col])
+                    break
+            financial_as_of = None
+            for col in ("REPORT_DATE", "report_date", "REPORT_PERIOD", "date"):
+                if col in fin.columns and pd.notna(fin.iloc[0][col]):
+                    parsed = pd.to_datetime(fin.iloc[0][col], errors="coerce")
+                    financial_as_of = None if pd.isna(parsed) else parsed.strftime("%Y-%m-%d")
+                    break
             # 检测实际币种
             if "CURRENCY" in fin.columns and pd.notna(fin["CURRENCY"].iloc[0]):
                 curr_str = str(fin["CURRENCY"].iloc[0])
@@ -227,16 +273,57 @@ class USDataSource:
                 elif "人民币" in curr_str or "CNY" in curr_str.upper():
                     currency = "CNY"
 
+            if market_cap is None:
+                for col in ("market_cap", "marketCap", "MARKET_CAP", "total_market_cap"):
+                    if col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        market_cap = float(fin.iloc[0][col])
+                        reported_market_cap = True
+                        break
+            if verified_shares is None:
+                for col in ("verified_shares", "shares_outstanding", "outstanding_share", "total_shares", "shares"):
+                    if col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        verified_shares = float(fin.iloc[0][col])
+                        break
+            if market_cap is None and verified_shares is not None and price is not None:
+                market_cap = price * verified_shares
+            if market_cap is None and verified_shares is None and profit_ttm and eps_ttm:
+                verified_shares = profit_ttm / float(eps_ttm)
+                market_cap = price * verified_shares if price is not None else None
+            market_cap_method = (
+                "reported_market_cap" if market_cap is not None and reported_market_cap else
+                "price_times_reported_shares" if verified_shares is not None and market_cap is not None else
+                "derived_profit_div_eps" if market_cap is not None else None
+            )
+            financial_fresh = not _is_financial_stale(financial_as_of)
+
+            result = {
+                "code": stock_code,
+                "price": round(price, 2),
+                "currency": "HKD" if self._is_hk(stock_code) else currency,
+                "eps_ttm": round(float(eps_ttm), 4),
+                "quote_source_count": 2 if secondary_price is not None else 1,
+                "quote_disagreement": bool(secondary_price is not None and price and
+                    abs(price - secondary_price) / abs(price) > 0.01),
+                "market_cap": market_cap,
+                "verified_shares": verified_shares,
+                "market_cap_method": market_cap_method,
+                "financial_as_of": financial_as_of,
+                "financial_fresh": financial_fresh,
+            }
+            if result["quote_source_count"] == 1:
+                result["validity_reason"] = "single_quote_source"
+            if result["quote_disagreement"]:
+                result["validity_reason"] = "; ".join(filter(None, [
+                    result.get("validity_reason"), "quote_disagreement"
+                ]))
+            if not financial_fresh:
+                result["validity_reason"] = _append_reason(result.get("validity_reason"), "financial_stale")
             if self._is_hk(stock_code):
                 eps_val = float(eps_ttm)
                 pe = price / eps_val if eps_val > 0 else None
-                return {
-                    "code": stock_code,
-                    "price": round(price, 2),
-                    "currency": "HKD",
-                    "eps_ttm": round(eps_val, 4),
-                    "pe": round(pe, 2) if pe else None,
-                }
+                if not result["quote_disagreement"] and financial_fresh:
+                    result["pe"] = round(pe, 2) if pe else None
+                return result
             else:
                 # 美股：根据实际币种决定换算方式
                 rate = self._get_fx_rate()
@@ -279,16 +366,15 @@ class USDataSource:
                         eps_usd = eps_usd * 10
                         pe = alt_pe
 
-                return {
-                    "code": stock_code,
-                    "price": round(price, 2),
-                    "currency": currency,
+                result.update({
                     "eps_ttm_cny": float(eps_ttm) if currency != "USD" else None,
                     "ads_ratio": ads_ratio,
                     "eps_ttm_usd": round(eps_usd, 4),
-                    "pe": round(pe, 2) if pe else None,
                     "rate": rate,
-                }
+                })
+                if not result["quote_disagreement"] and financial_fresh:
+                    result["pe"] = round(pe, 2) if pe else None
+                return result
         except Exception:
             return None
 

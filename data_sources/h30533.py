@@ -9,6 +9,8 @@ import os
 import re
 import time
 import math
+import hashlib
+import json
 from typing import Any, Callable, Mapping, Optional
 
 import pandas as pd
@@ -46,7 +48,7 @@ class H30533Source:
     REQUIRED_COLUMNS = [
         "index_code", "security_code", "name", "exchange", "weight",
         "as_of", "source_type", "issuer_id", "security_type", "ads_ratio",
-        "is_duplicate_issuer", "raw_metadata",
+        "is_duplicate_issuer", "raw_metadata", "source_url", "fetched_at", "response_hash",
     ]
     COLUMNS = REQUIRED_COLUMNS
 
@@ -65,10 +67,27 @@ class H30533Source:
         self.etf_url = etf_url or os.getenv("H30533_ETF_URL", self.DEFAULT_ETF_URL)
         self.rejected_rows: list[dict[str, Any]] = []
         self.last_source_type: Optional[str] = None
+        self.last_source_meta: dict[str, Any] = {}
+        self.source_metadata: dict[str, Any] = {}
+
+    @staticmethod
+    def _raw_response_bytes(payload: Any) -> bytes:
+        if isinstance(payload, bytes):
+            return payload
+        if isinstance(payload, str):
+            return payload.encode()
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()
 
     def _request_json(self, url: str, params: Mapping[str, Any]) -> Any:
         response = requests.get(url, params=params, timeout=self.timeout)
         response.raise_for_status()
+        raw = response.content if isinstance(response.content, bytes) else str(response.content).encode()
+        self.last_source_meta = {
+            "source_url": response.url,
+            "fetched_at": pd.Timestamp.now(tz="UTC").isoformat(),
+            "response_hash": hashlib.sha256(raw).hexdigest(),
+        }
+        self.source_metadata = dict(self.last_source_meta)
         return response.json()
 
     def get_snapshot(self) -> pd.DataFrame:
@@ -79,19 +98,42 @@ class H30533Source:
             ("etf_disclosure", self.etf_url, self.parse_etf_disclosure, {"fundCode": CHINA_INTL_FUND_CODE}),
         ):
             for attempt in range(self.retries + 1):
+                self.last_source_meta = {}
                 try:
-                    result = parser(self.fetcher(url, params))
+                    payload = self.fetcher(url, params)
+                    if not self.last_source_meta:
+                        self.last_source_meta = {
+                            "source_url": url,
+                            "fetched_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                            "response_hash": hashlib.sha256(self._raw_response_bytes(payload)).hexdigest(),
+                        }
+                        self.source_metadata = dict(self.last_source_meta)
+                    result = parser(payload)
                     if result.empty:
                         raise H30533SourceError("source returned no valid constituent rows", "empty_snapshot")
                     return self.deduplicate_issuers(result)
                 except H30533SourceError as exc:
-                    errors.append({"source_type": source_type, "code": exc.code, "message": str(exc)})
+                    attempt_meta = self.last_source_meta or {
+                        "source_url": url,
+                        "fetched_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                    }
+                    errors.append({"source_type": source_type, "code": exc.code, "message": str(exc),
+                                   "details": exc.details, **attempt_meta,
+                                   "source_url": attempt_meta.get("source_url", url),
+                                   "fetched_at": attempt_meta.get("fetched_at")})
                     if attempt < self.retries and exc.code == "transport_error":
                         time.sleep(0.2 * (attempt + 1))
                     else:
                         break
                 except Exception as exc:
-                    errors.append({"source_type": source_type, "code": "transport_error", "message": str(exc)})
+                    attempt_meta = self.last_source_meta or {
+                        "source_url": url,
+                        "fetched_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                    }
+                    errors.append({"source_type": source_type, "code": "transport_error", "message": str(exc),
+                                   "source_url": attempt_meta.get("source_url", url),
+                                   "fetched_at": attempt_meta.get("fetched_at"),
+                                   "details": {}})
                     if attempt < self.retries:
                         time.sleep(0.2 * (attempt + 1))
         raise H30533SourceError(
@@ -185,6 +227,9 @@ class H30533Source:
                     "ads_ratio": self._optional_number(raw, "ads_ratio", "adsRatio"),
                     "is_duplicate_issuer": False,
                     "raw_metadata": dict(raw),
+                    "source_url": self.last_source_meta.get("source_url"),
+                    "fetched_at": self.last_source_meta.get("fetched_at"),
+                    "response_hash": self.last_source_meta.get("response_hash"),
                 })
             except (TypeError, ValueError) as exc:
                 self.rejected_rows.append({"row": raw, "reason": str(exc)})
