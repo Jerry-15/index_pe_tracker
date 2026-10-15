@@ -24,12 +24,15 @@ class EulerpoolProvider:
     def _get(self, path: str) -> dict[str, Any] | None:
         if not self.token:
             return None
-        response = requests.get(
-            f"{self.BASE_URL}/{path.lstrip('/')}",
-            params={"token": self.token},
-            headers={"User-Agent": "index-pe-tracker/1.0"},
-            timeout=self.timeout,
-        )
+        try:
+            response = requests.get(
+                f"{self.BASE_URL}/{path.lstrip('/')}",
+                params={"token": self.token},
+                headers={"User-Agent": "index-pe-tracker/1.0"},
+                timeout=self.timeout,
+            )
+        except requests.RequestException:
+            return None
         if response.status_code != 200:
             return None
         payload = response.json()
@@ -60,6 +63,20 @@ class EulerpoolProvider:
     def market_cap_history(self, symbol: str, range_name: str = "5y") -> dict[str, Any] | None:
         return self._get(f"equity/market-cap/{symbol}")
 
+    def search(self, query: str) -> list[dict[str, Any]]:
+        payload = self._get(f"screener/search/{query}")
+        return payload if isinstance(payload, list) else []
+
+    def resolve_isin(self, query: str, preferred_ticker: str | None = None) -> str | None:
+        for item in self.search(query):
+            ticker = str(item.get("ticker") or "").upper()
+            if preferred_ticker and ticker == preferred_ticker.upper():
+                return item.get("isin")
+        for item in self.search(query):
+            if item.get("isin"):
+                return item["isin"]
+        return None
+
     def verified_inputs_for(self, identifiers: list[str]) -> dict[str, Any] | None:
         """Try preferred identifiers in order, usually ISIN before ticker."""
         for identifier in identifiers:
@@ -82,7 +99,7 @@ class EulerpoolProvider:
                 continue
             return {
                 "profit_ttm": float(profit) * 1_000_000 if profit is not None else None,
-                "eps_ttm": float(eps),
+                "eps_ttm": float(eps) if eps is not None else None,
                 "financial_as_of": as_of,
                 "currency": profile.get("currency"),
                 "source": "eulerpool",
