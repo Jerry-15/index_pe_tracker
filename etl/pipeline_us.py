@@ -46,7 +46,7 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.95,
             continue
         total_weight += weight
         row_reason = str(row.get("validity_reason") or "")
-        if row.get("financial_fresh") is False or "financial_stale" in row_reason or "stale_financial" in row_reason:
+        if not row.get("historical_backfill") and (row.get("financial_fresh") is False or "financial_stale" in row_reason or "stale_financial" in row_reason):
             financial_stale_count += 1
             excluded_count += 1
             continue
@@ -326,15 +326,23 @@ class USETL:
         self.cache.save_us_pe_stats(pe_df[stats_cols])
 
     def run_historical(self, progress_cb=None) -> pd.DataFrame:
-        """Backfill using current constituents, with an explicit caveat.
+        """Backfill current H30533 constituents using historical closes.
 
-        Historical rows use current verified financial shares with historical
-        closes; this is a valuation backfill, not historical membership.
+        This is deliberately not presented as official historical membership.
+        Current verified financial inputs are held constant while historical
+        closes vary, and every row carries the backfill caveat and quality C.
         """
         snapshot = self.h30533_source.get_snapshot()
+        snapshot = snapshot.copy()
+        source_meta = getattr(self.h30533_source, "source_metadata", {}) or {}
+        for key in ("source_url", "fetched_at", "response_hash"):
+            if key not in snapshot:
+                snapshot[key] = source_meta.get(key)
+            else:
+                snapshot[key] = snapshot[key].where(snapshot[key].notna(), source_meta.get(key))
         records = []
         for _, constituent in snapshot.iterrows():
-            record = self.source.get_current_pe(constituent["security_code"])
+            record = self.source.get_current_pe(constituent["security_code"]) or {}
             record.update({
                 "security_code": constituent["security_code"],
                 "name": constituent.get("name"),
@@ -342,6 +350,11 @@ class USETL:
                 "source_date": constituent["as_of"],
                 "source_type": constituent["source_type"],
                 "constituent_basis": "current_constituents_backfill",
+                "financial_fresh": True,
+                "historical_backfill": True,
+                "source_url": constituent.get("source_url"),
+                "fetched_at": constituent.get("fetched_at"),
+                "response_hash": constituent.get("response_hash"),
             })
             records.append(record)
         if not records:
@@ -368,14 +381,17 @@ class USETL:
                 row = dict(input_by_code[code])
                 row["price"] = float(day.iloc[-1]["close"])
                 shares = row.get("verified_shares")
+                ads_ratio = row.get("ads_ratio") or 1.0
                 row["market_cap"] = (
-                    row["price"] * float(shares)
+                    row["price"] * float(shares) / float(ads_ratio)
                     if shares is not None and not pd.isna(shares)
                     else None
                 )
+                row["market_cap_method"] = "price_times_reported_shares" if row["market_cap"] is not None else None
                 rows.append(row)
             aggregate = aggregate_h30533(
-                pd.DataFrame(rows), fx_rates={"CNY/USD": self.source._get_fx_rate()}
+                pd.DataFrame(rows), min_weight_coverage=0.95,
+                fx_rates={"CNY/USD": self.source._get_fx_rate(), "HKD/USD": self.source._get_fx_rate()}
             )
             results.append({
                 "trade_date": date,
@@ -383,15 +399,29 @@ class USETL:
                 "source_type": snapshot.iloc[0]["source_type"],
                 "source_date": snapshot.iloc[0]["as_of"],
                 "constituent_as_of": snapshot.iloc[0]["as_of"],
+                "source_url": snapshot.iloc[0].get("source_url"),
+                "fetched_at": snapshot.iloc[0].get("fetched_at"),
+                "response_hash": snapshot.iloc[0].get("response_hash"),
                 "total_market_cap": None,
                 "total_profit_ttm": None,
                 "pe_ratio": aggregate["pe"],
+                "index_pe": aggregate["pe"],
+                "earnings_yield": aggregate["earnings_yield"],
                 "stock_count": aggregate["valid_count"],
+                "valid_count": aggregate["valid_count"],
                 "weight_coverage": aggregate["weight_coverage"],
                 "negative_profit_count": aggregate["negative_profit_count"],
                 "missing_count": aggregate["missing_count"],
+                "invalid_count": aggregate["invalid_count"],
+                "financial_stale_count": aggregate["financial_stale_count"],
+                "derived_market_cap_count": aggregate["derived_market_cap_count"],
+                "quote_disagreement_count": aggregate["quote_disagreement_count"],
+                "excluded_count": aggregate["excluded_count"],
+                "quality_level": "C",
                 "validity_reason": aggregate["reason"],
                 "constituent_basis": "current_constituents_backfill",
+                "current_constituents_backfill": True,
+                "current_constituents_caveat": "historical values use current constituents and current financial inputs",
             })
 
         pe_df = add_valuation_stats(pd.DataFrame(results))
