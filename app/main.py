@@ -101,7 +101,7 @@ def build_pe_chart(pe_df, index_name, reference_df=None, industry_pe=None):
     )
 
     fig.update_layout(
-        title=f"<b>{index_name}</b> — 指数 PE(TTM) 近8年走势",
+        title=f"<b>{index_name}</b> — 指数 PE(TTM) 历史走势",
         xaxis_title="日期", yaxis_title="市盈率 (PE)",
         height=500, hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -233,8 +233,15 @@ def _render_china_intl(us_etl):
         st.caption(
             f"来源：{latest.get('source_type') or '未知'} | 来源日期：{latest.get('source_date') or '--'} | "
             f"成分日期：{latest.get('constituent_as_of') or '--'} | "
-            f"权重覆盖：{latest.get('weight_coverage') if pd.notna(latest.get('weight_coverage')) else '--'}"
+            f"权重覆盖：{latest.get('weight_coverage') if pd.notna(latest.get('weight_coverage')) else '--'} | "
+            f"财务截至：{stock_pe['financial_as_of'].max() if 'financial_as_of' in stock_pe and stock_pe['financial_as_of'].notna().any() else '--'}"
         )
+        generated_at = latest.get("updated_at")
+        generated_label = (
+            datetime.fromtimestamp(float(generated_at)).isoformat(timespec="seconds")
+            if pd.notna(generated_at) else "--"
+        )
+        st.caption(f"成分数：{len(snapshot['constituents'])} | 生成时间：{generated_label}")
         if pd.isna(pe):
             st.warning(f"当前 PE 不可用：{latest.get('validity_reason') or '有效覆盖不足'}")
         tab1, tab2, tab3 = st.tabs(["PE 走势", "成分股诊断", "说明"])
@@ -260,7 +267,7 @@ def _render_china_intl(us_etl):
                         name="低估线(均值-1σ)", line=dict(color=CHART_COLORS["low_line"], width=1.5, dash="dot"),
                     ))
                 fig.update_layout(
-                    title=f"<b>中概互联网</b> — PE(TTM) 近8年走势",
+                    title=f"<b>H30533</b> — PE(TTM) 历史走势",
                     xaxis_title="日期", yaxis_title="市盈率 (PE)",
                     height=450, hovermode="x unified",
                     template="plotly_white",
@@ -282,13 +289,12 @@ def _render_china_intl(us_etl):
             - **成分与权重**：来自 H30533 指数成分快照，页面同时展示来源类型和成分生效日期。
             - **计算口径**：按成分权重汇总经核验的市值与 TTM 利润，形成加权盈利收益率。
             - **数据覆盖**：当前 PE 仅在有效输入和最低权重覆盖条件满足时显示，否则保留不可用状态及原因。
+            - **财务截至**：成分证券财务输入的最新报告日期会随快照展示。
             - **历史说明**：历史序列使用当前成分回溯，不代表历史真实调仓，需谨慎解读。
             """)
     else:
         st.info("暂无 H30533 数据，请点击左侧「更新数据」开始拉取。")
-        st.markdown("""
-        **首次运行说明：** 数据来自 H30533 成分快照和证券财务输入；来源、覆盖率、成分日期及不可用原因会随快照保存。
-        """)
+        st.markdown("**首次运行说明：** H30533 成分快照、证券财务截至日期、来源、覆盖率和有效性原因会随数据保存。")
 
     etl = get_etl()
     us_etl = USETL()
@@ -428,7 +434,7 @@ def _render_china_intl(us_etl):
                     - **TTM对齐**：按财报公告日期对齐，滚动取最近4个季度；发布前沿用上一期数据
                     - **停牌处理**：当日无行情的成分股自动剔除（不影响分子分母）
                     - **负利润**：TTM利润 ≤ 0 的成分股不参与聚合，避免PE失真
-                    - ⚠️ **与参考PE的差异**：使用流通市值 + 当前成分股回溯，绝对水平比参考口径低 20-40%，趋势相关性中等（近8年 r≈0.7-0.8）。**估值区间判断需谨慎**，建议同时参考「参考PE」线
+                    - ⚠️ **与参考PE的差异**：使用流通市值 + 当前成分股回溯，绝对水平比参考口径低 20-40%，趋势相关性中等。**估值区间判断需谨慎**，建议同时参考「参考PE」线
                     - ⚠️ **历史成分股**：未考虑每半年调仓，精确回溯需历史成分股数据（成本高）
                     - 💡 验证方法：`python scripts/validate_pe.py` 可查看 TTM 双算法交叉验证和 PE 对照
                     """)
@@ -498,14 +504,7 @@ def _render_china_intl(us_etl):
                                mime="text/csv")
     else:
         st.info(f"暂无 {index_name} 的数据，请在左侧点击「更新数据」开始拉取。")
-        st.markdown(f"""
-        **首次运行说明：**
-        1. 系统将从新浪财经获取全部成分股的历史日K线和财务报表
-        2. 沪深300约300只股票，预计需要 **5-10 分钟**（后续增量更新秒级完成）
-        3. 数据将缓存在本地 SQLite 数据库中
-        4. 计算逻辑：对每日成分股汇总市值和TTM净利润 → 得出指数PE
-        5. ⚠️ 使用当前成分股回溯历史，存在轻微幸存者偏差（参考值可能与理杏仁等有5-15%差异）
-        """)
+        st.markdown("**首次运行说明：** 请在左侧更新数据。数据会缓存在本地数据库中，页面仅展示当前选择指数的有效历史结果。")
 
 
 if __name__ == "__main__":

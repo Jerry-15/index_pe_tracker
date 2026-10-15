@@ -52,9 +52,9 @@ class H30533SourceTests(unittest.TestCase):
                 self.assertEqual(len(entries), 1)
                 entry = entries[0]
                 self.assertEqual(entry["data_file"], "CHINA_INTL.json")
-                self.assertEqual(entry["source_type"], "csi_official")
+                self.assertEqual(entry["source"], "csi_official")
                 self.assertEqual(entry["constituent_as_of"], "2026-10-13")
-                self.assertEqual(entry["validity_reason"], "coverage below minimum")
+                self.assertEqual(entry["validity"], "coverage below minimum")
                 self.assertEqual(entry["constituent_basis"], "official")
                 self.assertEqual(entry["coverage"], 0.8)
                 self.assertEqual(entry["stock_diagnostics"][0]["validity_reason"], "missing price")
@@ -70,9 +70,12 @@ class H30533SourceTests(unittest.TestCase):
         streamlit = root.joinpath("app/main.py").read_text()
         self.assertIn("中证海外中国互联网50（H30533）", html)
         self.assertIn("中证海外中国互联网50（H30533）", streamlit)
-        for stale in ("23 家美股", "自定义 EPS", "固定参考PE", "US_REF_PE"):
+        for stale in ("23 家美股", "自定义 EPS", "固定参考PE", "US_REF_PE", "近8年"):
             self.assertNotIn(stale, html)
             self.assertNotIn(stale, streamlit)
+        self.assertIn("if (!res.ok) throw new Error", html)
+        self.assertIn("if (!manifest || !Array.isArray(manifest.artifacts))", html)
+        self.assertIn("meta.financial_as_of", html)
 
     def test_h30533_snapshot_round_trips_all_valuation_metadata(self):
         with tempfile.TemporaryDirectory() as directory:

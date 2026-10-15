@@ -90,6 +90,13 @@ function initCharts() {
   window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
 }
 
+function clearRenderedState(message='数据不可用') {
+  document.getElementById('cards').innerHTML = `<div class="card"><div class="value">${message}</div></div>`;
+  document.getElementById('chartStockPE').innerHTML = '';
+  document.getElementById('chartSectionB').style.display = 'none';
+  Object.values(charts).forEach(chart => chart.clear());
+}
+
 function fmtDate(d) { return d.slice(0,10); }
 function fmtNum(v, n=2) { return v == null ? '--' : Number(v).toFixed(n); }
 
@@ -119,7 +126,9 @@ async function runUpdate() {
   try {
     // 触发 Streamlit 后端更新（静态版通过刷新获取最新数据）
     const res = await fetch('/api/update', {method:'POST'});
+    if (!res.ok) throw new Error(`update HTTP ${res.status}`);
     const data = await res.json();
+    if (!data || typeof data.ok !== 'boolean') throw new Error('update response is invalid');
     status.textContent = data.ok ? '✅ 更新完成' : '⚠️ 请稍后重试';
     if (data.ok) loadIndexList();
   } catch(e) {
@@ -130,8 +139,29 @@ async function runUpdate() {
 }
 
 async function loadIndexList() {
-  const res = await fetch('data/index_list.json');
-  indexList = await res.json();
+  let manifest;
+  try {
+    const manifestRes = await fetch('data/manifest.json');
+    if (!manifestRes.ok) throw new Error(`manifest HTTP ${manifestRes.status}`);
+    manifest = await manifestRes.json();
+    if (!manifest || !Array.isArray(manifest.artifacts)) throw new Error('manifest is invalid');
+  } catch (_) {
+    indexList = [];
+    document.getElementById('coverage').textContent = '无法加载数据清单';
+    clearRenderedState('数据加载失败');
+    return;
+  }
+  try {
+    const res = await fetch('data/index_list.json');
+    if (!res.ok) throw new Error(`index list HTTP ${res.status}`);
+    indexList = await res.json();
+    if (!Array.isArray(indexList)) throw new Error('index list is not an array');
+  } catch (error) {
+    indexList = [];
+    document.getElementById('coverage').textContent = `无法加载指数列表${manifest ? '' : '，请稍后重试'}`;
+    clearRenderedState('数据加载失败');
+    return;
+  }
   const sel = document.getElementById('picker');
   sel.innerHTML = '';
   const gIndex = document.createElement('optgroup'); gIndex.label = '宽基指数';
@@ -145,9 +175,11 @@ async function loadIndexList() {
     else if (item.type === 'h30533') gUS.appendChild(opt);
   });
   sel.appendChild(gIndex); sel.appendChild(gIndus); sel.appendChild(gUS);
-  sel.value = indexList.some(item => item.code === '000300') ? '000300' : 'H30533';
+  const previous = currentCode;
+  sel.value = indexList.some(item => item.code === previous) ? previous : (indexList.some(item => item.code === '000300') ? '000300' : (indexList[0]?.code || ''));
   sel.onchange = () => render(sel.value);
-  render(sel.value);
+  if (sel.value) render(sel.value);
+  else clearRenderedState('暂无数据');
 }
 
 function num(v, n=2) { return v == null ? '--' : v.toFixed(n); }
@@ -166,7 +198,9 @@ function renderCards(meta, rows) {
     <div class="card"><div class="label">低估线(μ-1σ)</div><div class="value down">${num(low)}</div></div>
     <div class="card"><div class="label">历史百分位</div><div class="value">${pct==null?'--':pct.toFixed(0)+'%'}</div>
       <div class="sub">${zone}</div></div>
-    <div class="card"><div class="label">数据覆盖</div><div class="value">${meta.coverage==null?'--':(meta.coverage*100).toFixed(1)+'%'}</div></div>
+     <div class="card"><div class="label">数据覆盖</div><div class="value">${meta.coverage==null?'--':(meta.coverage*100).toFixed(1)+'%'}</div><div class="sub">有效性：${meta.validity || '--'}</div></div>
+     <div class="card"><div class="label">数据日期</div><div class="value">${meta.date || '--'}</div><div class="sub">财务截至：${meta.financial_as_of || '--'}</div></div>
+     <div class="card"><div class="label">静态生成</div><div class="value" style="font-size:14px">${meta.generated_at || '--'}</div></div>
   `;
 }
 
@@ -247,15 +281,25 @@ async function render(code) {
   const meta = indexList.find(i => i.code === code);
   const isUS = meta && meta.type === 'h30533';
 
-  document.getElementById('coverage').textContent = isUS ? `来源：${meta.source_type || '--'} · 来源日期：${meta.source_date || '--'} · 成分日期：${meta.constituent_as_of || '--'} · 覆盖：${meta.coverage == null ? '--' : (meta.coverage * 100).toFixed(1) + '%'}` : (meta ? (meta.type==='index'?'宽基指数':'申万行业') : '');
+  document.getElementById('coverage').textContent = isUS ? `来源：${meta.source || meta.source_type || '--'} · 成分日期：${meta.constituent_as_of || '--'} · 财务截至：${meta.financial_as_of || '--'} · 生成时间：${meta.generated_at || '--'} · 覆盖：${meta.coverage == null ? '--' : (meta.coverage * 100).toFixed(1) + '%'}` : (meta ? (meta.type==='index'?'宽基指数':'申万行业') : '');
   document.getElementById('chartSectionB').style.display = isUS ? 'block' : 'none';
   document.getElementById('btnUpdate').style.display = isUS ? 'inline-block' : 'none';
   document.getElementById('updateStatus').textContent = '';
 
-  const res = await fetch(`data/${meta && meta.data_file ? meta.data_file : code + '.json'}`);
-  const rows = await res.json();
-  if (!rows.length) {
-    document.getElementById('cards').innerHTML = '<div class="card"><div class="value">数据不可用</div></div>';
+  if (!meta) { clearRenderedState('数据不可用'); return; }
+  let rows;
+  try {
+    const res = await fetch(`data/${meta.data_file || code + '.json'}`);
+    if (!res.ok) throw new Error(`data HTTP ${res.status}`);
+    rows = await res.json();
+    if (!Array.isArray(rows)) throw new Error('data is not an array');
+  } catch (_) {
+    clearRenderedState('数据加载失败');
+    return;
+  }
+  if (!rows.length || meta.unavailable) {
+    document.getElementById('coverage').textContent += ` · 有效性：${meta.validity || meta.validity_reason || '当前不可用'}`;
+    clearRenderedState('数据不可用');
     return;
   }
 
@@ -265,12 +309,6 @@ async function render(code) {
   }
 
   renderCards(meta, rows);
-  if (isUS && meta.unavailable) {
-    document.getElementById('coverage').textContent += ` · 当前不可用：${meta.validity_reason || '有效覆盖不足'}`;
-  }
-  if (isUS) {
-    document.getElementById('coverage').textContent += ' · 历史序列为当前成分回溯，不代表历史调仓';
-  }
   charts.main.setOption(buildMainOption(meta, rows), true);
   charts.pct.setOption(buildPctOption(rows), true);
   charts.fund.setOption(buildFundOption(rows), true);

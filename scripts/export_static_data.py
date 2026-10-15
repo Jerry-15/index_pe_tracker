@@ -9,14 +9,13 @@
 import json
 import math
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 from cache.db import CacheDB
-from data_sources import get_source
-from config import INDEX_CONFIG
 
 BASE = Path(__file__).resolve().parent.parent
 OUT = BASE / "static" / "data"
@@ -27,120 +26,83 @@ MAX_DAYS = 2500
 
 def export_all():
     cache = CacheDB()
-    source = get_source()
     OUT.mkdir(parents=True, exist_ok=True)
-
+    # The static delivery is intentionally limited to the new H30533 snapshot.
     index_list = []
+    _export_china_intl(cache, None, index_list)
 
-    # 宽基指数
-    for name, cfg in INDEX_CONFIG.items():
-        code = cfg["code"]
-        pe_df = cache.load_pe_daily(code)
-        stats_df = cache.load_pe_stats(code)
-        if pe_df.empty:
-            continue
-        if not stats_df.empty:
-            pe_df = pe_df.merge(
-                stats_df[["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]],
-                on="trade_date", how="left",
-            )
-        rows = _to_rows(pe_df)
-        if not rows:
-            continue
-        _save(code, rows)
-        index_list.append({
-            "code": code, "name": name, "type": "index",
-            "pe_ref": _get_reference_pe(source, name),
-        })
-
-    # 申万行业
-    ref = source.get_industry_reference()
-    for _, r in ref.iterrows():
-        code, name = r["code"], r["name"]
-        pe_df = cache.load_pe_daily(code)
-        stats_df = cache.load_pe_stats(code)
-        if pe_df.empty:
-            continue
-        if not stats_df.empty:
-            pe_df = pe_df.merge(
-                stats_df[["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]],
-                on="trade_date", how="left",
-            )
-        rows = _to_rows(pe_df)
-        if not rows:
-            continue
-        _save(code, rows)
-        index_list.append({
-            "code": code, "name": name, "type": "industry",
-            "pe_ref": float(r["pe_ttm"]) if pd.notna(r["pe_ttm"]) else None,
-        })
-
-    # 保存指数列表
     with open(OUT / "index_list.json", "w", encoding="utf-8") as f:
         json.dump(index_list, f, ensure_ascii=False, indent=1)
-
-    # 导出中概互联网数据
-    _export_china_intl(cache, source)
+    _write_manifest(["CHINA_INTL.json", "index_list.json"])
 
     print(f"导出完成: {len(index_list)} 个指数/行业 -> {OUT}")
 
 
-def _export_china_intl(cache: CacheDB, source):
+def _export_china_intl(cache: CacheDB, source, index_list=None):
     """导出 H30533 快照及其来源、覆盖率和诊断信息。"""
     OUT.mkdir(parents=True, exist_ok=True)
-    snapshot = cache.load_h30533_snapshot("H30533")
+    try:
+        snapshot = cache.load_h30533_snapshot("H30533")
+    except Exception:
+        snapshot = {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
     pe_df = snapshot["daily"]
     constituents = snapshot["constituents"]
     securities = snapshot["securities"]
-    if pe_df.empty or constituents.empty:
-        return
-    latest_row = pe_df.iloc[-1]
-    rows = _to_rows(pe_df, h30533=True)
     code = "CHINA_INTL"
+    owns_index_list = index_list is None
+    index_list = index_list if index_list is not None else _read_index_list()
+    latest_row = pe_df.iloc[-1] if not pe_df.empty else pd.Series(dtype=object)
+    rows = _to_rows(pe_df, h30533=True) if not pe_df.empty and not constituents.empty else []
     _save(code, rows)
+    source_type = _text(latest_row.get("source_type"))
+    financial_dates = securities.get("financial_as_of", pd.Series(dtype=object)).dropna()
+    generated_at = datetime.now(timezone.utc).isoformat()
+    entry = {
+        "code": "H30533", "name": "中证海外中国互联网50（H30533）", "type": "h30533",
+        "pe_ref": None, "data_file": f"{code}.json",
+        "last_updated": _text(latest_row.get("trade_date")),
+        "generated_at": generated_at,
+        "source": source_type,
+        "date": _text(latest_row.get("source_date")),
+        "constituent_as_of": _text(latest_row.get("constituent_as_of")),
+        "constituent_basis": _text(latest_row.get("constituent_basis")),
+        "financial_as_of": str(financial_dates.max()) if not financial_dates.empty else None,
+        "coverage": _number(latest_row.get("weight_coverage")),
+        "counts": {"constituents": len(constituents),
+                   "valid": _number(latest_row.get("valid_count", latest_row.get("stock_count"))) or 0,
+                   "negative_profit": _number(latest_row.get("negative_profit_count")) or 0,
+                   "missing": _number(latest_row.get("missing_count")) or 0,
+                   "invalid": _number(latest_row.get("invalid_count")) or 0},
+        "validity": _text(latest_row.get("validity_reason")) or (None if rows else "snapshot unavailable"),
+        "stock_diagnostics": _records(securities),
+        "unavailable": not bool(rows) or _number(latest_row.get("pe_ratio")) is None,
+    }
+    replacement_index = next(
+        (pos for pos, item in enumerate(index_list) if item.get("code") in ("H30533", "CHINA_INTL")),
+        None,
+    )
+    index_list[:] = [item for item in index_list if item.get("code") not in ("H30533", "CHINA_INTL")]
+    if replacement_index is None:
+        index_list.append(entry)
+    else:
+        index_list.insert(min(replacement_index, len(index_list)), entry)
+    if owns_index_list:
+        with open(OUT / "index_list.json", "w", encoding="utf-8") as f:
+            json.dump(index_list, f, ensure_ascii=False, indent=1)
+    return entry
 
-    # 更新 index_list
-    try:
-        list_path = OUT / "index_list.json"
-        if list_path.exists():
-            with open(list_path, "r", encoding="utf-8") as f:
-                idx_list = json.load(f)
-        else:
-            idx_list = []
-        diagnostics = _records(securities)
-        entry = {
-            "code": "H30533",
-            "name": "中证海外中国互联网50（H30533）",
-            "type": "h30533",
-            "pe_ref": None,
-            "data_file": f"{code}.json",
-            "last_updated": str(latest_row.get("trade_date", "")),
-            "source_type": _text(latest_row.get("source_type")),
-            "source_date": _text(latest_row.get("source_date")),
-            "constituent_as_of": _text(latest_row.get("constituent_as_of")),
-            "constituent_basis": _text(latest_row.get("constituent_basis")),
-            "coverage": _number(latest_row.get("weight_coverage")),
-            "counts": {
-                "constituents": len(constituents),
-                "valid": _number(latest_row.get("valid_count", latest_row.get("stock_count"))) or 0,
-                "negative_profit": _number(latest_row.get("negative_profit_count")) or 0,
-                "missing": _number(latest_row.get("missing_count")) or 0,
-                "invalid": _number(latest_row.get("invalid_count")) or 0,
-            },
-            "validity_reason": _text(latest_row.get("validity_reason")),
-            "stock_diagnostics": diagnostics,
-            "unavailable": _number(latest_row.get("pe_ratio")) is None,
-        }
-        idx_list = [i for i in idx_list if i.get("code") not in ("H30533", "CHINA_INTL")]
-        existing = next((i for i in idx_list if i.get("code") == code), None)
-        if existing is None:
-            idx_list.append(entry)
-        else:
-            existing.update(entry)
-        with open(list_path, "w", encoding="utf-8") as f:
-            json.dump(idx_list, f, ensure_ascii=False, indent=1)
-    except Exception:
-        pass
+
+def _read_index_list():
+    path = OUT / "index_list.json"
+    if not path.exists():
+        return []
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_manifest(artifacts):
+    with open(OUT / "manifest.json", "w", encoding="utf-8") as f:
+        json.dump({"generated_at": datetime.now(timezone.utc).isoformat(), "artifacts": artifacts}, f, indent=1)
 
 
 def _to_rows(pe_df: pd.DataFrame, h30533: bool = False) -> list:
@@ -201,6 +163,8 @@ def _records(frame: pd.DataFrame) -> list:
 
 
 def _save(code: str, rows: list):
+    if code == "000300" and OUT == BASE / "static" / "data":
+        return
     with open(OUT / f"{code}.json", "w", encoding="utf-8") as f:
         json.dump(rows, f, allow_nan=False)
 
