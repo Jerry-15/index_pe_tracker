@@ -68,6 +68,8 @@ def quality_level(
     )
     if not complete_coverage or not no_disqualifying_issues:
         return "C"
+    if source_type is None:
+        return "B"
     if source_type == "csi_official" and derived_market_cap_count == 0:
         return "A"
     if source_type == "etf_disclosure" or (derived_market_cap_count is not None and derived_market_cap_count > 0):

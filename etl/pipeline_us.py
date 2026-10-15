@@ -8,9 +8,10 @@ from data_sources.us import USDataSource
 from cache.db import CacheDB
 from config import API_BATCH_DELAY, CHINA_INTL_INDEX_CODE
 from etl.stats import add_valuation_stats, STAT_COLUMNS
+from etl.quality import quality_level, append_reason
 
 
-def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8,
+def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.95,
                      fx_rates: Optional[dict] = None) -> dict:
     """Aggregate verified H30533 inputs using weighted earnings yield.
 
@@ -29,6 +30,10 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8,
     valid_count = 0
     fx_rates = fx_rates or {}
     currency_unavailable = False
+    financial_stale_count = 0
+    derived_market_cap_count = 0
+    quote_disagreement_count = 0
+    excluded_count = 0
 
     for _, row in rows.iterrows():
         try:
@@ -40,6 +45,19 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8,
             invalid_count += 1
             continue
         total_weight += weight
+        row_reason = str(row.get("validity_reason") or "")
+        if row.get("financial_fresh") is False or "financial_stale" in row_reason or "stale_financial" in row_reason:
+            financial_stale_count += 1
+            excluded_count += 1
+            continue
+        if bool(row.get("quote_disagreement")) or "quote_disagreement" in row_reason:
+            quote_disagreement_count += 1
+            excluded_count += 1
+            continue
+        if "missing ads_ratio" in row_reason or "missing currency" in row_reason or "unsupported currency" in row_reason:
+            missing_count += 1
+            excluded_count += 1
+            continue
 
         market_cap = row.get("market_cap")
         if market_cap is None or pd.isna(market_cap):
@@ -53,19 +71,25 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8,
         profit_value = row.get("profit_ttm")
         if market_cap is None or pd.isna(market_cap) or profit_value is None or pd.isna(profit_value):
             missing_count += 1
+            excluded_count += 1
             continue
         try:
             market_cap = float(market_cap)
             profit = float(profit_value)
         except (TypeError, ValueError):
             invalid_count += 1
+            excluded_count += 1
             continue
         if not np.isfinite(market_cap) or not np.isfinite(profit):
             invalid_count += 1
+            excluded_count += 1
             continue
         if market_cap <= 0:
             invalid_count += 1
+            excluded_count += 1
             continue
+        if row.get("market_cap_method") == "derived_profit_div_eps":
+            derived_market_cap_count += 1
         market_currency = str(row.get("market_cap_currency") or row.get("currency") or "").upper()
         profit_currency = str(row.get("profit_currency") or row.get("currency") or "").upper()
         if market_currency and profit_currency and market_currency != profit_currency:
@@ -73,18 +97,22 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8,
             if rate is None:
                 missing_count += 1
                 currency_unavailable = True
+                excluded_count += 1
                 continue
             try:
                 rate = float(rate)
             except (TypeError, ValueError):
                 invalid_count += 1
+                excluded_count += 1
                 continue
             if not np.isfinite(rate) or rate <= 0:
                 invalid_count += 1
+                excluded_count += 1
                 continue
             profit /= rate
         if profit <= 0:
             negative_profit_count += 1
+            excluded_count += 1
             continue
 
         valid_weight += weight
@@ -101,6 +129,16 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8,
         reason = f"insufficient weight coverage: {coverage:.6f} < {min_weight_coverage:.6f}"
     elif earnings_yield <= 0:
         reason = "aggregate earnings yield is non-positive"
+    source_value = rows.iloc[0].get("source_type") if not rows.empty else None
+    qlevel = quality_level(
+        source_type=source_value if source_value not in (None, "", "nan", "None") else None,
+        weight_coverage=coverage,
+        financial_stale_count=financial_stale_count,
+        derived_market_cap_count=derived_market_cap_count,
+        quote_disagreement_count=quote_disagreement_count,
+    )
+    if qlevel == "C" and reason is None:
+        reason = "quality gate failed"
 
     return {
         "pe": 1 / earnings_yield if reason is None else None,
@@ -115,6 +153,11 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8,
         "valid": reason is None,
         "reason": reason,
         "validity_reason": reason,
+        "quality_level": qlevel,
+        "financial_stale_count": financial_stale_count,
+        "derived_market_cap_count": derived_market_cap_count,
+        "quote_disagreement_count": quote_disagreement_count,
+        "excluded_count": excluded_count,
     }
 
 

@@ -424,13 +424,14 @@ class H30533SourceTests(unittest.TestCase):
             {"weight": 0.50, "market_cap": 200.0, "profit_ttm": 20.0},
         ])
 
-        result = aggregate_h30533(rows, min_weight_coverage=0.7)
+        result = aggregate_h30533(rows, min_weight_coverage=0.8)
 
         expected_yield = 0.25 * (10 / 100) + 0.50 * (20 / 200)
         self.assertAlmostEqual(result["earnings_yield"], expected_yield)
-        self.assertAlmostEqual(result["pe"], 1 / expected_yield)
+        self.assertIsNone(result["pe"])
+        self.assertIn("coverage", result["reason"])
         self.assertEqual(result["weight_coverage"], 0.75)
-        self.assertTrue(result["valid"])
+        self.assertFalse(result["valid"])
 
     def test_aggregate_h30533_counts_negative_profit_without_using_it(self):
         rows = pd.DataFrame([
@@ -438,7 +439,7 @@ class H30533SourceTests(unittest.TestCase):
             {"weight": 0.20, "market_cap": 100.0, "profit_ttm": -5.0},
         ])
 
-        result = aggregate_h30533(rows)
+        result = aggregate_h30533(rows, min_weight_coverage=0.8)
 
         self.assertAlmostEqual(result["earnings_yield"], 0.06)
         self.assertEqual(result["negative_profit_count"], 1)
@@ -453,7 +454,7 @@ class H30533SourceTests(unittest.TestCase):
             {"weight": 0.21, "market_cap": None, "profit_ttm": 10.0},
         ])
 
-        result = aggregate_h30533(rows)
+        result = aggregate_h30533(rows, min_weight_coverage=0.8)
 
         self.assertEqual(result["weight_coverage"], 0.79)
         self.assertIsNone(result["pe"])
@@ -462,16 +463,16 @@ class H30533SourceTests(unittest.TestCase):
 
     def test_aggregate_h30533_can_use_verified_shares_and_price(self):
         rows = pd.DataFrame([{
-            "weight": 0.8,
+            "weight": 0.95,
             "price": 12.0,
             "verified_shares": 10.0,
             "profit_ttm": 24.0,
         }])
 
-        result = aggregate_h30533(rows)
+        result = aggregate_h30533(rows, min_weight_coverage=0.8)
 
-        self.assertAlmostEqual(result["earnings_yield"], 0.16)
-        self.assertAlmostEqual(result["pe"], 6.25)
+        self.assertAlmostEqual(result["earnings_yield"], 0.19)
+        self.assertAlmostEqual(result["pe"], 5.263157894736842)
 
     def test_aggregate_h30533_converts_profit_into_market_cap_currency(self):
         rows = pd.DataFrame([{
@@ -753,9 +754,9 @@ class H30533SourceTests(unittest.TestCase):
         etl.h30533_source = MagicMock()
         etl.source = MagicMock()
         etl.h30533_source.get_snapshot.return_value = pd.DataFrame([
-            {"security_code": "BABA", "name": "Alibaba", "weight": 0.8,
+            {"security_code": "BABA", "name": "Alibaba", "weight": 0.95,
              "source_type": "csi_official", "as_of": "2026-10-13"},
-            {"security_code": "PDD", "name": "PDD", "weight": 0.2,
+            {"security_code": "PDD", "name": "PDD", "weight": 0.05,
              "source_type": "csi_official", "as_of": "2026-10-13"},
         ])
         etl.source.get_current_pe.side_effect = [
@@ -766,8 +767,8 @@ class H30533SourceTests(unittest.TestCase):
         with patch.object(etl, "_recompute_us_stats"):
             result = etl.run()
 
-        self.assertAlmostEqual(result.iloc[0]["pe_ratio"], 12.5)
-        self.assertAlmostEqual(result.iloc[0]["earnings_yield"], 0.08)
+        self.assertAlmostEqual(result.iloc[0]["pe_ratio"], 10.526315789473685)
+        self.assertAlmostEqual(result.iloc[0]["earnings_yield"], 0.095)
         self.assertEqual(result.iloc[0]["negative_profit_count"], 1)
         self.assertEqual(result.iloc[0]["index_code"], CHINA_INTL_INDEX_CODE)
         self.assertEqual(result.iloc[0]["source_type"], "csi_official")
