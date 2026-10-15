@@ -113,7 +113,10 @@ class CacheDB:
                     total_profit_ttm REAL,
                     stock_count INTEGER,
                     quality_level TEXT, financial_stale_count INTEGER, derived_market_cap_count INTEGER,
-                    quote_disagreement_count INTEGER, excluded_count INTEGER, source_type TEXT,
+                    quote_disagreement_count INTEGER, excluded_count INTEGER, invalid_count INTEGER,
+                    source_type TEXT, market_cap_method TEXT, profit_currency TEXT,
+                    market_cap_currency TEXT, fx_rate REAL, normalized_profit_ttm REAL,
+                    financial_fresh INTEGER, quote_source_count INTEGER, quote_disagreement INTEGER,
                     source_url TEXT, fetched_at TEXT, response_hash TEXT, current_constituents_backfill INTEGER,
                     current_constituents_caveat TEXT, updated_at REAL,
                     PRIMARY KEY (trade_date)
@@ -206,7 +209,10 @@ class CacheDB:
             "us_pe_daily": {
                 "quality_level": "TEXT", "financial_stale_count": "INTEGER",
                 "derived_market_cap_count": "INTEGER", "quote_disagreement_count": "INTEGER",
-                "excluded_count": "INTEGER", "source_type": "TEXT", "source_url": "TEXT",
+                "excluded_count": "INTEGER", "invalid_count": "INTEGER", "source_type": "TEXT",
+                "market_cap_method": "TEXT", "profit_currency": "TEXT", "market_cap_currency": "TEXT",
+                "fx_rate": "REAL", "normalized_profit_ttm": "REAL", "financial_fresh": "INTEGER",
+                "quote_source_count": "INTEGER", "quote_disagreement": "INTEGER", "source_url": "TEXT",
                 "fetched_at": "TEXT", "response_hash": "TEXT", "current_constituents_backfill": "INTEGER",
                 "current_constituents_caveat": "TEXT",
             },
@@ -220,6 +226,16 @@ class CacheDB:
     @staticmethod
     def _migrate_h30533_tables(conn: sqlite3.Connection):
         """Add allowlisted H30533 columns without disturbing legacy extensions."""
+        evidence = {
+            "quality_level": "TEXT", "financial_stale_count": "INTEGER",
+            "derived_market_cap_count": "INTEGER", "quote_disagreement_count": "INTEGER",
+            "excluded_count": "INTEGER", "invalid_count": "INTEGER", "source_url": "TEXT",
+            "fetched_at": "TEXT", "response_hash": "TEXT", "market_cap_method": "TEXT",
+            "profit_currency": "TEXT", "market_cap_currency": "TEXT", "fx_rate": "REAL",
+            "normalized_profit_ttm": "REAL", "financial_fresh": "INTEGER",
+            "quote_source_count": "INTEGER", "quote_disagreement": "INTEGER",
+            "current_constituents_backfill": "INTEGER", "current_constituents_caveat": "TEXT",
+        }
         migrations = {
             "h30533_constituent_snapshot": {
                 "snapshot_date": "TEXT", "index_code": "TEXT", "security_code": "TEXT",
@@ -228,14 +244,7 @@ class CacheDB:
                 "as_of": "TEXT", "constituent_as_of": "TEXT", "is_duplicate_issuer": "INTEGER",
                 "raw_metadata": "TEXT",
                 "validity_reason": "TEXT",
-                "source_url": "TEXT", "fetched_at": "TEXT", "response_hash": "TEXT",
-                "current_constituents_backfill": "INTEGER", "current_constituents_caveat": "TEXT",
-                "source_url": "TEXT", "fetched_at": "TEXT", "response_hash": "TEXT",
-                "quality_level": "TEXT", "financial_stale_count": "INTEGER",
-                "derived_market_cap_count": "INTEGER", "quote_disagreement_count": "INTEGER",
-                "excluded_count": "INTEGER", "market_cap_method": "TEXT", "profit_currency": "TEXT",
-                "market_cap_currency": "TEXT", "fx_rate": "REAL", "normalized_profit_ttm": "REAL",
-                "financial_fresh": "INTEGER", "quote_source_count": "INTEGER", "quote_disagreement": "INTEGER",
+                **evidence,
             },
             "h30533_daily_valuation": {
                 "trade_date": "TEXT", "index_code": "TEXT", "pe_ratio": "REAL",
@@ -244,15 +253,8 @@ class CacheDB:
                 "weight_coverage": "REAL", "negative_profit_count": "INTEGER",
                 "missing_count": "INTEGER", "source_type": "TEXT", "source_date": "TEXT",
                 "constituent_as_of": "TEXT", "constituent_basis": "TEXT",
-                "validity_reason": "TEXT", "quality_level": "TEXT",
-                "financial_stale_count": "INTEGER", "derived_market_cap_count": "INTEGER",
-                "quote_disagreement_count": "INTEGER", "excluded_count": "INTEGER",
-                "invalid_count": "INTEGER", "source_url": "TEXT", "fetched_at": "TEXT",
-                "response_hash": "TEXT", "current_constituents_backfill": "INTEGER",
-                 "current_constituents_caveat": "TEXT", "updated_at": "REAL",
-                 "market_cap_method": "TEXT", "profit_currency": "TEXT", "market_cap_currency": "TEXT",
-                 "fx_rate": "REAL", "normalized_profit_ttm": "REAL", "financial_fresh": "INTEGER",
-                 "quote_source_count": "INTEGER", "quote_disagreement": "INTEGER",
+                "validity_reason": "TEXT", "updated_at": "REAL",
+                **evidence,
             },
             "h30533_security_valuation": {
                 "snapshot_date": "TEXT", "index_code": "TEXT", "security_code": "TEXT",
@@ -261,17 +263,8 @@ class CacheDB:
                 "profit_ttm": "REAL", "earnings_yield": "REAL", "index_pe": "REAL",
                 "pe": "REAL", "financial_as_of": "TEXT", "source_date": "TEXT",
                 "source_type": "TEXT", "source": "TEXT", "data_source": "TEXT",
-                "validity_reason": "TEXT", "quality_level": "TEXT",
-                "market_cap_method": "TEXT", "quote_source_count": "INTEGER",
-                "quote_disagreement": "INTEGER", "profit_currency": "TEXT",
-                 "market_cap_currency": "TEXT", "fx_rate": "REAL",
-                 "normalized_profit_ttm": "REAL", "source_url": "TEXT", "fetched_at": "TEXT",
-                 "response_hash": "TEXT", "current_constituents_backfill": "INTEGER",
-                 "current_constituents_caveat": "TEXT",
-                 "financial_fresh": "INTEGER", "quote_source_count": "INTEGER",
-                 "quote_disagreement": "INTEGER",
-                 "financial_stale_count": "INTEGER", "derived_market_cap_count": "INTEGER",
-                 "quote_disagreement_count": "INTEGER", "excluded_count": "INTEGER",
+                "validity_reason": "TEXT",
+                **evidence,
             },
         }
         for table, columns in migrations.items():
@@ -297,7 +290,7 @@ class CacheDB:
                 "constituent_as_of", "is_duplicate_issuer", "raw_metadata", "validity_reason",
                  "source_url", "fetched_at", "response_hash", "current_constituents_backfill",
                  "current_constituents_caveat", "quality_level", "financial_stale_count",
-                 "derived_market_cap_count", "quote_disagreement_count", "excluded_count",
+                  "derived_market_cap_count", "quote_disagreement_count", "excluded_count", "invalid_count",
                  "market_cap_method", "profit_currency", "market_cap_currency", "fx_rate",
                  "normalized_profit_ttm", "financial_fresh", "quote_source_count", "quote_disagreement",
             },
@@ -321,7 +314,8 @@ class CacheDB:
                 "market_cap_method", "quote_source_count", "quote_disagreement",
                 "profit_currency", "market_cap_currency", "fx_rate", "normalized_profit_ttm",
                  "source_url", "fetched_at", "response_hash", "current_constituents_backfill",
-                  "current_constituents_caveat", "financial_fresh",
+                   "current_constituents_caveat", "financial_fresh", "financial_stale_count",
+                   "derived_market_cap_count", "quote_disagreement_count", "excluded_count", "invalid_count",
             },
         }[table]
         for column in frame.columns:
@@ -681,10 +675,12 @@ class CacheDB:
             conn.execute("DELETE FROM us_pe_daily")
             columns = (
                 "trade_date", "pe_ratio", "total_market_cap", "total_profit_ttm", "stock_count",
-                "quality_level", "financial_stale_count", "derived_market_cap_count",
-                "quote_disagreement_count", "excluded_count", "source_type", "source_url",
-                "fetched_at", "response_hash", "current_constituents_backfill",
-                "current_constituents_caveat", "updated_at",
+                 "quality_level", "financial_stale_count", "derived_market_cap_count",
+                 "quote_disagreement_count", "excluded_count", "source_type", "source_url",
+                 "fetched_at", "response_hash", "current_constituents_backfill",
+                 "current_constituents_caveat", "invalid_count", "market_cap_method",
+                 "profit_currency", "market_cap_currency", "fx_rate", "normalized_profit_ttm",
+                 "financial_fresh", "quote_source_count", "quote_disagreement", "updated_at",
             )
             records = []
             for _, row in pe_df.iterrows():
@@ -710,10 +706,12 @@ class CacheDB:
             conn.execute("DELETE FROM us_pe_daily WHERE trade_date=?", (date,))
             columns = (
                 "trade_date", "pe_ratio", "total_market_cap", "total_profit_ttm", "stock_count",
-                "quality_level", "financial_stale_count", "derived_market_cap_count",
-                "quote_disagreement_count", "excluded_count", "source_type", "source_url",
-                "fetched_at", "response_hash", "current_constituents_backfill",
-                "current_constituents_caveat", "updated_at",
+                 "quality_level", "financial_stale_count", "derived_market_cap_count",
+                 "quote_disagreement_count", "excluded_count", "source_type", "source_url",
+                 "fetched_at", "response_hash", "current_constituents_backfill",
+                 "current_constituents_caveat", "invalid_count", "market_cap_method",
+                 "profit_currency", "market_cap_currency", "fx_rate", "normalized_profit_ttm",
+                 "financial_fresh", "quote_source_count", "quote_disagreement", "updated_at",
             )
             records = []
             for _, row in df.iterrows():

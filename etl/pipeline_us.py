@@ -242,6 +242,9 @@ class USETL:
             if pe is None and market_cap and profit and profit > 0:
                 pe = market_cap / profit
             valid = bool(market_cap and profit and profit > 0 and pe and 0 < pe < 500)
+            market_cap_method = record.get("market_cap_method") or (
+                "price_times_reported_shares" if market_cap is not None and record.get("market_cap") is None else None
+            )
             valuation_rows.append({
                 "index_code": self.index_code, "security_code": code, "name": name,
                 "issuer_id": constituent.get("issuer_id"), "weight": constituent.get("weight"),
@@ -251,11 +254,15 @@ class USETL:
                 "market_cap": market_cap,
                 "verified_shares": shares, "profit_ttm": profit,
                 "as_of": constituent.get("as_of"),
-                "market_cap_method": record.get("market_cap_method") or (
-                    "price_times_reported_shares" if market_cap is not None and record.get("market_cap") is None else None
-                ),
-                "quote_disagreement": record.get("quote_disagreement", False),
-                "quote_source_count": record.get("quote_source_count"),
+                "market_cap_method": market_cap_method,
+                 "quote_disagreement": record.get("quote_disagreement", False),
+                 "quote_source_count": record.get("quote_source_count"),
+                 "financial_stale_count": int(not record.get("financial_fresh", True)),
+                 "derived_market_cap_count": int(market_cap_method in (
+                     "price_times_reported_shares", "derived_profit_div_eps"
+                 )),
+                 "quote_disagreement_count": int(bool(record.get("quote_disagreement"))),
+                 "excluded_count": int(not valid), "invalid_count": int(not valid),
                 "fx_rate": record.get("rate"),
                 "normalized_profit_ttm": record.get("normalized_profit_ttm"),
                 "financial_fresh": record.get("financial_fresh"),
@@ -269,7 +276,15 @@ class USETL:
                 "source_type": constituent.get("source_type"),
                 "source": record.get("source"), "data_source": record.get("data_source", record.get("source")),
                 "validity_reason": record.get("validity_reason") or (None if valid else "missing or invalid valuation"),
-                "quality_level": "A" if valid else "C",
+                "quality_level": quality_level(
+                    source_type=constituent.get("source_type"),
+                    weight_coverage=1.0 if valid else 0.0,
+                    financial_stale_count=0 if record.get("financial_fresh", True) else 1,
+                    derived_market_cap_count=1 if market_cap_method in (
+                        "price_times_reported_shares", "derived_profit_div_eps"
+                    ) else 0,
+                    quote_disagreement_count=1 if record.get("quote_disagreement") else 0,
+                ),
                 "current_constituents_backfill": False,
                 "current_constituents_caveat": None,
             })
@@ -281,6 +296,17 @@ class USETL:
             pd.DataFrame(valuation_rows),
             fx_rates={"CNY/USD": self.source._get_fx_rate(), "HKD/USD": self.source._get_fx_rate()},
         )
+
+        # Keep constituent rows self-describing while retaining the raw source fields.
+        security_evidence = pd.DataFrame(valuation_rows).set_index("security_code")
+        for column in (
+            "quality_level", "financial_stale_count", "derived_market_cap_count",
+            "quote_disagreement_count", "excluded_count", "market_cap_method",
+            "profit_currency", "market_cap_currency", "fx_rate", "normalized_profit_ttm",
+            "financial_fresh", "quote_source_count", "quote_disagreement",
+        ):
+            if column in security_evidence:
+                constituents[column] = constituents["security_code"].map(security_evidence[column])
 
         if not results or aggregate["pe"] is None:
             today = pd.Timestamp.today().strftime("%Y-%m-%d")
@@ -313,6 +339,10 @@ class USETL:
                 "validity_reason": aggregate["validity_reason"] or "no valid security valuations",
                 "current_constituents_backfill": False,
                 "current_constituents_caveat": None,
+                "market_cap_method": None, "profit_currency": None,
+                "market_cap_currency": None, "fx_rate": None,
+                "normalized_profit_ttm": None, "financial_fresh": None,
+                "quote_source_count": None, "quote_disagreement": None,
             }])
             self.cache.save_h30533_snapshot(
                 self.index_code, constituents, diagnostic, pd.DataFrame(valuation_rows)
@@ -351,10 +381,14 @@ class USETL:
             "source_url": constituents.iloc[0].get("source_url"),
             "fetched_at": constituents.iloc[0].get("fetched_at"),
             "response_hash": constituents.iloc[0].get("response_hash"),
-            "validity_reason": aggregate["validity_reason"],
-            "current_constituents_backfill": False,
-            "current_constituents_caveat": None,
-        }
+             "validity_reason": aggregate["validity_reason"],
+             "current_constituents_backfill": False,
+             "current_constituents_caveat": None,
+             "market_cap_method": None, "profit_currency": None,
+             "market_cap_currency": None, "fx_rate": None,
+             "normalized_profit_ttm": None, "financial_fresh": None,
+             "quote_source_count": None, "quote_disagreement": None,
+         }
         pe_df = pd.DataFrame([row])
 
         # Persist the source snapshot and all enriched security rows together.
@@ -529,6 +563,14 @@ class USETL:
             pe_df["quote_disagreement_count"] = 0
             pe_df["excluded_count"] = 0
             pe_df["invalid_count"] = 0
+            pe_df["market_cap_method"] = None
+            pe_df["profit_currency"] = None
+            pe_df["market_cap_currency"] = None
+            pe_df["fx_rate"] = None
+            pe_df["normalized_profit_ttm"] = None
+            pe_df["financial_fresh"] = None
+            pe_df["quote_source_count"] = 0
+            pe_df["quote_disagreement"] = False
             pe_df["validity_reason"] = "current_constituents_backfill"
             pe_df["current_constituents_backfill"] = True
             pe_df["current_constituents_caveat"] = "historical values use current constituents"
