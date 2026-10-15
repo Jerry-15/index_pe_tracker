@@ -69,6 +69,27 @@ class EulerpoolProvider:
                 return result
         return None
 
+    def financial_inputs(self, identifiers: list[str]) -> dict[str, Any] | None:
+        """Return normalized LTM profit/EPS/date alongside profile currency."""
+        for identifier in identifiers:
+            profile = self.profile(identifier) or {}
+            financials = self.financials_ltm(identifier) or {}
+            income = financials.get("income", {}) if isinstance(financials, dict) else {}
+            profit = income.get("netIncome") or income.get("bottomLineNetIncome")
+            eps = income.get("epsDiluted") or income.get("eps")
+            as_of = financials.get("asOf") if isinstance(financials, dict) else None
+            if profit is None and eps is None:
+                continue
+            return {
+                "profit_ttm": float(profit) * 1_000_000 if profit is not None else None,
+                "eps_ttm": float(eps),
+                "financial_as_of": as_of,
+                "currency": profile.get("currency"),
+                "source": "eulerpool",
+                "data_source": "eulerpool",
+            }
+        return None
+
     def verified_inputs(self, symbol: str) -> dict[str, Any] | None:
         profile = self.profile(symbol) or {}
         market = self.market_cap(symbol) or {}
