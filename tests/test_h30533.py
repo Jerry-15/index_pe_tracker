@@ -365,23 +365,57 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(source.source_errors[0]["details"]["expected"], CHINA_INTL_INDEX_CODE)
 
     def test_run_historical_persists_backfill_metadata(self):
+        from etl.pipeline_us import aggregate_h30533 as real_aggregate
+
         etl = USETL(cache=MagicMock())
         etl.h30533_source = MagicMock()
         etl.source = MagicMock()
         etl.h30533_source.get_snapshot.return_value = pd.DataFrame([{
             "security_code": "BABA", "name": "Alibaba", "weight": 1.0,
             "source_type": "etf_disclosure", "as_of": "2026-10-13",
+        }, {
+            "security_code": "TENCENT", "name": "Tencent", "weight": 0.2,
+            "source_type": "etf_disclosure", "as_of": "2026-10-13",
         }])
         etl.source.get_current_pe.return_value = {
             "code": "BABA", "price": 80.0, "market_cap": 800.0,
-            "profit_ttm": 80.0, "currency": "USD", "financial_as_of": "2026-09-30",
+            "verified_shares": 10.0, "profit_ttm": 80.0, "currency": "USD",
+            "financial_as_of": "2026-09-30",
         }
-        etl.source.get_daily_quotes.return_value = pd.DataFrame([{"date": "2026-10-14", "close": 80.0}])
+        etl.source.get_current_pe.side_effect = [
+            {
+                "code": "BABA", "price": 80.0, "market_cap": 800.0,
+                "verified_shares": 10.0, "profit_ttm": 20.0,
+                "currency": "USD", "financial_as_of": "2026-09-30",
+            },
+            {
+                "code": "TENCENT", "price": 50.0, "market_cap": 500.0,
+                "verified_shares": None, "profit_ttm": 20.0,
+                "currency": "USD", "financial_as_of": "2026-09-30",
+            },
+        ]
+        etl.source.get_daily_quotes.side_effect = [
+            pd.DataFrame([{"date": "2026-10-14", "close": 10.0}]),
+            pd.DataFrame(),
+        ]
         etl.source._get_fx_rate.return_value = 7.2
+        aggregate_inputs = []
 
-        with patch("etl.pipeline_us.API_BATCH_DELAY", 0), patch.object(etl, "_recompute_us_stats"):
+        def capture_aggregate(rows, **kwargs):
+            aggregate_inputs.append(rows.copy())
+            return real_aggregate(rows, **kwargs)
+
+        with patch("etl.pipeline_us.API_BATCH_DELAY", 0), patch.object(etl, "_recompute_us_stats"), \
+                patch("etl.pipeline_us.aggregate_h30533", side_effect=capture_aggregate):
             result = etl.run_historical()
 
+        self.assertEqual(len(result), 1)
+        self.assertAlmostEqual(result.iloc[0]["pe_ratio"], 5.0)
+        self.assertEqual(result.iloc[0]["stock_count"], 1)
+        self.assertEqual(result.iloc[0]["weight_coverage"], 1.0)
+        historical_rows = aggregate_inputs[0]
+        self.assertEqual(historical_rows.iloc[0]["market_cap"], 100.0)
+        self.assertEqual(historical_rows.iloc[0]["verified_shares"], 10.0)
         self.assertEqual(result.iloc[0]["constituent_basis"], "current_constituents_backfill")
         etl.cache.save_h30533_snapshot.assert_called_once()
         saved_daily = etl.cache.save_h30533_snapshot.call_args.args[2]

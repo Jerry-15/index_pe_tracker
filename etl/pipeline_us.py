@@ -265,7 +265,11 @@ class USETL:
         self.cache.save_us_pe_stats(pe_df[stats_cols])
 
     def run_historical(self, progress_cb=None) -> pd.DataFrame:
-        """Backfill using current constituents, with an explicit caveat."""
+        """Backfill using current constituents, with an explicit caveat.
+
+        Historical rows use current verified financial shares with historical
+        closes; this is a valuation backfill, not historical membership.
+        """
         snapshot = self.h30533_source.get_snapshot()
         records = []
         for _, constituent in snapshot.iterrows():
@@ -302,7 +306,12 @@ class USETL:
                     continue
                 row = dict(input_by_code[code])
                 row["price"] = float(day.iloc[-1]["close"])
-                row["market_cap"] = None
+                shares = row.get("verified_shares")
+                row["market_cap"] = (
+                    row["price"] * float(shares)
+                    if shares is not None and not pd.isna(shares)
+                    else None
+                )
                 rows.append(row)
             aggregate = aggregate_h30533(
                 pd.DataFrame(rows), fx_rates={"CNY/USD": self.source._get_fx_rate()}
