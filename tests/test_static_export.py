@@ -70,6 +70,9 @@ class StaticDeliveryTests(unittest.TestCase):
 
         root = Path(__file__).parents[1]
         committed_catalog = json.loads((root / "static/data/index_list.json").read_text())
+        protected_payloads = {
+            path: path.read_bytes() for path in (root / "static/data").glob("*.json")
+        }
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             (output / "index_list.json").write_text(json.dumps(committed_catalog))
@@ -83,13 +86,19 @@ class StaticDeliveryTests(unittest.TestCase):
             self.assertEqual(by_code["000300"]["data_file"], "000300.json")
             self.assertEqual(by_code["801010"]["data_file"], "801010.json")
             self.assertEqual(by_code["H30533"]["data_file"], "CHINA_INTL.json")
-            self.assertTrue((output / "000300.json").exists())
+            self.assertEqual(json.loads((output / "000300.json").read_text()), [
+                ["2026-10-14", 12.5, None, None, None, None, None, None, 3, 3, 1.0, None],
+            ])
             self.assertTrue((output / "801010.json").exists())
             self.assertTrue((output / "CHINA_INTL.json").exists())
             self.assertFalse((output / "H30533.json").exists())
             manifest = json.loads((output / "manifest.json").read_text())
             self.assertEqual(set(manifest["artifacts"]),
                              {"index_list.json", *(item["data_file"] for item in catalog)})
+        self.assertEqual(
+            protected_payloads,
+            {path: path.read_bytes() for path in (root / "static/data").glob("*.json")},
+        )
 
     def test_main_definition_and_guard_prevent_import_nameerror(self):
         source = Path(__file__).parents[1] / "app/main.py"

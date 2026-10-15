@@ -203,8 +203,6 @@ def _records(frame: pd.DataFrame) -> list:
 
 
 def _save(filename: str, rows: list):
-    if filename == "000300.json" and OUT == BASE / "static" / "data":
-        return
     with open(OUT / filename, "w", encoding="utf-8") as f:
         json.dump(rows, f, allow_nan=False)
 
