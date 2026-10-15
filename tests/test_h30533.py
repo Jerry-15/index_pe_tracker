@@ -582,7 +582,7 @@ class H30533SourceTests(unittest.TestCase):
 
         result = source.parse_etf_disclosure(fixture.read_text())
 
-        self.assertEqual(result["as_of"].unique().tolist(), ["2026-09-30"])
+        self.assertEqual(result["as_of"].unique().tolist(), ["2026-06-30"])
         self.assertEqual(result["security_code"].tolist(), ["00700.HK", "BABA"])
         self.assertEqual(result["name"].tolist(), ["腾讯控股", "阿里巴巴"])
         self.assertEqual(result["weight"].tolist(), [0.0825, 0.051])

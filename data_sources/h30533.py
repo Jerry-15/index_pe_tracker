@@ -219,7 +219,7 @@ class H30533Source:
             payload,
         )
         if not date:
-            date = re.search(r"(?:截止日期|报告期|报告日期)\s*[:：]?\s*(\d{4}[-/]\d{2}[-/]\d{2}|\d{4}年\d{2}月\d{2}日)", content)
+            date = re.search(r"(?:截止日期|截止至|报告期|报告日期)\s*[:：]?\s*(?:<[^>]*>\s*)*(\d{4}[-/]\d{2}[-/]\d{2}|\d{4}年\d{2}月\d{2}日)", content)
         if not date:
             raise H30533SourceError(
                 "etf_disclosure response has no report date",
