@@ -86,9 +86,12 @@ class StaticDeliveryTests(unittest.TestCase):
             self.assertEqual(by_code["000300"]["data_file"], "000300.json")
             self.assertEqual(by_code["801010"]["data_file"], "801010.json")
             self.assertEqual(by_code["H30533"]["data_file"], "CHINA_INTL.json")
-            self.assertEqual(json.loads((output / "000300.json").read_text()), [
-                ["2026-10-14", 12.5, None, None, None, None, None, None, 3, 3, 1.0, None],
-            ])
+            row = json.loads((output / "000300.json").read_text())[0]
+            self.assertEqual(row[:12], ["2026-10-14", 12.5, None, None, None, None, None,
+                                        None, 3, 3, 1.0, None])
+            self.assertEqual(row[12:15], ["C", "Source", "Source"])
+            self.assertTrue(row[15])
+            self.assertEqual(row[16:], [1.0, None, "unknown"])
             self.assertTrue((output / "801010.json").exists())
             self.assertTrue((output / "CHINA_INTL.json").exists())
             self.assertFalse((output / "H30533.json").exists())
@@ -154,7 +157,7 @@ def test_static_rows_are_strict_json_and_keep_validity_metadata():
 
     assert "NaN" not in encoded
     assert rows[0][1] is None
-    assert rows[0][8:] == [1, 0, 0.5, "non_positive_profit;pe_out_of_bounds"]
+    assert rows[0][8:12] == [1, 0, 0.5, "non_positive_profit;pe_out_of_bounds"]
 
 
 def test_h30533_static_rows_emit_valuation_bands():
@@ -165,6 +168,34 @@ def test_h30533_static_rows_emit_valuation_bands():
     }]), h30533=True)
 
     assert rows[0][2:6] == [10.0, 12.0, 8.0, 75.0]
+
+
+def test_all_static_rows_include_common_quality_contract():
+    rows = _to_rows(pd.DataFrame([{
+        "trade_date": "2026-10-14", "pe_ratio": 12.5,
+        "quality_level": "A", "source": "sina", "data_source": "akshare",
+        "generated_at": "2026-10-15T00:00:00+00:00", "coverage": 0.98,
+        "financial_as_of": "2026-09-30", "validity": "valid",
+    }]))
+
+    assert rows[0][-7:] == ["A", "sina", "akshare", "2026-10-15T00:00:00+00:00",
+                            0.98, "2026-09-30", "valid"]
+
+
+def test_manifest_contains_schema_revision_counts_and_ranges(tmp_path, monkeypatch):
+    class EmptyCache:
+        def load_h30533_snapshot(self, code):
+            return {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
+
+    monkeypatch.setattr(export_static_data, "OUT", tmp_path)
+    monkeypatch.setattr(export_static_data, "CacheDB", EmptyCache)
+    monkeypatch.setattr(export_static_data, "INDEX_CONFIG", {})
+    export_static_data.export_all()
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert set(manifest) >= {"schema_version", "source_revision", "item_count", "date_ranges", "generated_at"}
+    assert manifest["item_count"] == 1
+    assert manifest["date_ranges"]["H30533"] == {"start": None, "end": None}
 
 
 def test_static_export_writes_h30533_unavailable_artifacts(tmp_path, monkeypatch):

@@ -15,6 +15,7 @@ from config import INDEX_CONFIG, INDEX_REFERENCE, CHART_COLORS, CHINA_INTL_CONFI
 from cache.db import CacheDB
 from etl.pipeline import PEETL
 from etl.pipeline_us import USETL
+from etl.stats import add_valuation_stats
 
 
 st.set_page_config(
@@ -161,6 +162,20 @@ def build_detail_charts(pe_df, index_name):
     return fig_mv, fig_profit
 
 
+def render_quality_panel(metadata, label="数据质量"):
+    """Render the canonical export metadata used by static and live views."""
+    st.caption(
+        f"{label}：等级 {metadata.get('quality_level') or '--'} | "
+        f"来源：{metadata.get('source') or metadata.get('data_source') or '--'} | "
+        f"生成：{metadata.get('generated_at') or '--'}"
+    )
+    st.caption(
+        f"覆盖：{metadata.get('coverage') if metadata.get('coverage') is not None else '--'} | "
+        f"财务截至：{metadata.get('financial_as_of') or '--'} | "
+        f"有效性：{metadata.get('validity') or '--'}"
+    )
+
+
 def run_update(index_code, index_name, progress_container):
     """执行数据更新"""
     etl = get_etl()
@@ -225,6 +240,7 @@ def _render_china_intl(us_etl):
     stock_pe = snapshot["securities"]
 
     if pe_df is not None and not pe_df.empty:
+        pe_df = add_valuation_stats(pe_df)
         latest = pe_df.iloc[-1]
         col1, col2, col3, col4 = st.columns(4)
         pe = latest.get("pe_ratio")
@@ -249,7 +265,16 @@ def _render_china_intl(us_etl):
             datetime.fromtimestamp(float(generated_at)).isoformat(timespec="seconds")
             if pd.notna(generated_at) else "--"
         )
-        st.caption(f"成分数：{len(snapshot['constituents'])} | 生成时间：{generated_label}")
+        render_quality_panel({
+            "quality_level": latest.get("quality_level"),
+            "source": latest.get("source", latest.get("source_type")),
+            "data_source": latest.get("data_source"),
+            "generated_at": generated_label,
+            "coverage": latest.get("weight_coverage"),
+            "financial_as_of": stock_pe["financial_as_of"].max() if "financial_as_of" in stock_pe else None,
+            "validity": latest.get("validity", latest.get("validity_reason")),
+        })
+        st.caption(f"成分数：{len(snapshot['constituents'])}")
         if pd.isna(pe):
             st.warning(f"当前 PE 不可用：{latest.get('validity_reason') or '有效覆盖不足'}")
         tab1, tab2, tab3 = st.tabs(["PE 走势", "成分股诊断", "说明"])
@@ -393,6 +418,15 @@ def main():
             ref_text = f" | 申万官方参考PE: {industry_pe_ref:.2f}"
         st.caption(f"📊 数据覆盖：{coverage}/{total_constituents} 只成分股 | "
                    f"更新至 {latest['trade_date']}{ref_text}")
+        render_quality_panel({
+            "quality_level": latest.get("quality_level"),
+            "source": latest.get("source", latest.get("source_type")),
+            "data_source": latest.get("data_source"),
+            "generated_at": latest.get("generated_at", latest.get("updated_at")),
+            "coverage": latest.get("coverage", latest.get("coverage_ratio")),
+            "financial_as_of": latest.get("financial_as_of"),
+            "validity": latest.get("validity", latest.get("validity_reason")),
+        })
 
         st.divider()
 

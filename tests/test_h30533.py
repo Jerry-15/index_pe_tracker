@@ -1,4 +1,6 @@
 import unittest
+import hashlib
+from datetime import datetime, timezone
 import sqlite3
 import tempfile
 import json
@@ -13,12 +15,134 @@ from data_sources.sina import SinaDataSource
 from data_sources.us import USDataSource
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
 from etl.pipeline_us import aggregate_h30533, USETL
+from etl.quality import (
+    MARKET_CAP_METHODS,
+    append_reason,
+    is_valid_market_cap_method,
+    is_stale,
+    quality_level,
+)
 from etl.stats import add_valuation_stats
 from cache.db import CacheDB
 from scripts import export_static_data
 
 
 class H30533SourceTests(unittest.TestCase):
+    def test_snapshot_captures_raw_response_provenance(self):
+        payload = {
+            "data": {"indexCode": CHINA_INTL_INDEX_CODE, "asOfDate": "2026-10-13",
+                     "constituents": [{"code": "00700", "name": "Tencent",
+                                       "exchange": "HK", "weight": 7.1}]}}
+        source = H30533Source(fetcher=lambda url, params: payload, retries=0,
+                              official_url="https://official.test")
+
+        result = source.get_snapshot()
+
+        self.assertEqual(result.iloc[0]["source_url"], "https://official.test")
+        self.assertEqual(result.iloc[0]["source_type"], "csi_official")
+        self.assertEqual(result.iloc[0]["as_of"], "2026-10-13")
+        self.assertEqual(result.iloc[0]["response_hash"], hashlib.sha256(
+            source._raw_response_bytes(payload)).hexdigest())
+        self.assertTrue(datetime.fromisoformat(result.iloc[0]["fetched_at"]).tzinfo)
+        self.assertEqual(source.source_metadata["response_hash"], result.iloc[0]["response_hash"])
+
+    def test_snapshot_exposes_structured_source_errors_before_etf_fallback(self):
+        def fetcher(url, params):
+            if params.get("indexCode"):
+                raise RuntimeError("CSI unavailable")
+            return {"fundCode": CHINA_INTL_FUND_CODE, "as_of": "2026-10-10",
+                    "holdings": [{"code": "00700", "name": "Tencent",
+                                   "market": "HK", "weight_pct": 7.1}]}
+
+        source = H30533Source(fetcher=fetcher, retries=0)
+        result = source.get_snapshot()
+
+        self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
+        self.assertEqual(source.source_errors[0]["code"], "transport_error")
+        self.assertEqual(source.source_errors[0]["source_type"], "csi_official")
+
+    def test_quality_level_grades_official_complete_data_as_a(self):
+        self.assertEqual(
+            quality_level(
+                source_type="csi_official",
+                weight_coverage=0.98,
+                financial_stale_count=0,
+                derived_market_cap_count=0,
+                quote_disagreement_count=0,
+            ),
+            "A",
+        )
+
+    def test_quality_level_grades_disclosed_or_derived_data_as_b(self):
+        self.assertEqual(
+            quality_level(
+                source_type="etf_disclosure",
+                weight_coverage=0.98,
+                financial_stale_count=0,
+                derived_market_cap_count=2,
+                quote_disagreement_count=0,
+            ),
+            "B",
+        )
+        self.assertEqual(
+            quality_level(
+                source_type="csi_official",
+                weight_coverage=0.98,
+                financial_stale_count=0,
+                derived_market_cap_count=2,
+                quote_disagreement_count=0,
+            ),
+            "B",
+        )
+
+    def test_quality_level_falls_back_to_c_for_low_coverage_or_disagreement(self):
+        common = {
+            "source_type": "etf_disclosure",
+            "weight_coverage": 0.70,
+            "financial_stale_count": 0,
+            "derived_market_cap_count": 0,
+            "quote_disagreement_count": 0,
+        }
+        self.assertEqual(quality_level(**common), "C")
+        self.assertEqual(quality_level(**{**common, "weight_coverage": None}), "C")
+        self.assertEqual(quality_level(**{**common, "quote_disagreement_count": 1}), "C")
+
+    def test_is_stale_uses_utc_calendar_dates_and_rejects_bad_dates(self):
+        self.assertFalse(is_stale("2026-04-19", "2026-10-16", max_age_days=180))
+        self.assertTrue(is_stale("2026-04-18", "2026-10-16", max_age_days=180))
+        self.assertTrue(is_stale(None, "2026-10-16"))
+        self.assertTrue(is_stale("not-a-date", "2026-10-16"))
+        self.assertTrue(is_stale("2026-10-16", "not-a-date"))
+
+    def test_append_reason_is_a_stable_deduplicated_diagnostic_list(self):
+        self.assertEqual(append_reason(None, "stale_financial"), "stale_financial")
+        self.assertEqual(
+            append_reason("missing_price;stale_financial", "stale_financial"),
+            "missing_price;stale_financial",
+        )
+        self.assertEqual(append_reason("", "missing_price"), "missing_price")
+        self.assertEqual(append_reason("missing_price", ""), "missing_price")
+
+    def test_append_reason_canonicalizes_existing_and_new_codes(self):
+        self.assertEqual(
+            append_reason(" stale_financial ; ; missing_price; stale_financial ", " missing_price "),
+            "stale_financial;missing_price",
+        )
+
+    def test_market_cap_method_validation_accepts_only_canonical_values(self):
+        self.assertEqual(MARKET_CAP_METHODS, (
+            "reported_market_cap",
+            "price_times_reported_shares",
+            "derived_profit_div_eps",
+        ))
+        for method in MARKET_CAP_METHODS + (None,):
+            with self.subTest(method=method):
+                self.assertTrue(is_valid_market_cap_method(method))
+
+        for method in ("", " reported_market_cap ", "unknown", 1):
+            with self.subTest(method=method):
+                self.assertFalse(is_valid_market_cap_method(method))
+
     def test_common_valuation_stats_support_long_and_single_point_series(self):
         long_frame = pd.DataFrame({
             "trade_date": pd.date_range("2025-01-01", periods=500),
@@ -300,13 +424,14 @@ class H30533SourceTests(unittest.TestCase):
             {"weight": 0.50, "market_cap": 200.0, "profit_ttm": 20.0},
         ])
 
-        result = aggregate_h30533(rows, min_weight_coverage=0.7)
+        result = aggregate_h30533(rows, min_weight_coverage=0.8)
 
         expected_yield = 0.25 * (10 / 100) + 0.50 * (20 / 200)
         self.assertAlmostEqual(result["earnings_yield"], expected_yield)
-        self.assertAlmostEqual(result["pe"], 1 / expected_yield)
+        self.assertIsNone(result["pe"])
+        self.assertIn("coverage", result["reason"])
         self.assertEqual(result["weight_coverage"], 0.75)
-        self.assertTrue(result["valid"])
+        self.assertFalse(result["valid"])
 
     def test_aggregate_h30533_counts_negative_profit_without_using_it(self):
         rows = pd.DataFrame([
@@ -314,7 +439,7 @@ class H30533SourceTests(unittest.TestCase):
             {"weight": 0.20, "market_cap": 100.0, "profit_ttm": -5.0},
         ])
 
-        result = aggregate_h30533(rows)
+        result = aggregate_h30533(rows, min_weight_coverage=0.8)
 
         self.assertAlmostEqual(result["earnings_yield"], 0.06)
         self.assertEqual(result["negative_profit_count"], 1)
@@ -329,7 +454,7 @@ class H30533SourceTests(unittest.TestCase):
             {"weight": 0.21, "market_cap": None, "profit_ttm": 10.0},
         ])
 
-        result = aggregate_h30533(rows)
+        result = aggregate_h30533(rows, min_weight_coverage=0.8)
 
         self.assertEqual(result["weight_coverage"], 0.79)
         self.assertIsNone(result["pe"])
@@ -338,16 +463,16 @@ class H30533SourceTests(unittest.TestCase):
 
     def test_aggregate_h30533_can_use_verified_shares_and_price(self):
         rows = pd.DataFrame([{
-            "weight": 0.8,
+            "weight": 0.95,
             "price": 12.0,
             "verified_shares": 10.0,
             "profit_ttm": 24.0,
         }])
 
-        result = aggregate_h30533(rows)
+        result = aggregate_h30533(rows, min_weight_coverage=0.8)
 
-        self.assertAlmostEqual(result["earnings_yield"], 0.16)
-        self.assertAlmostEqual(result["pe"], 6.25)
+        self.assertAlmostEqual(result["earnings_yield"], 0.19)
+        self.assertAlmostEqual(result["pe"], 5.263157894736842)
 
     def test_aggregate_h30533_converts_profit_into_market_cap_currency(self):
         rows = pd.DataFrame([{
@@ -500,6 +625,61 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(record["verified_shares"], 10.0)
         self.assertEqual(record["profit_ttm"], 80.0)
 
+    def test_current_pe_marks_old_financial_report_stale(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+             patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                 "EPS_TTM": 2.0, "NET_PROFIT_TTM": 80.0, "CURRENCY": "USD",
+                 "REPORT_DATE": "2020-01-01",
+             }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertFalse(record["financial_fresh"])
+        self.assertIn("stale_financial", record["validity_reason"])
+        self.assertNotIn("pe", record)
+
+    def test_current_pe_reports_market_cap_method(self):
+        cases = [
+            ({"market_cap": 800.0}, "reported_market_cap"),
+            ({"shares_outstanding": 10.0}, "price_times_reported_shares"),
+            ({}, "derived_profit_div_eps"),
+        ]
+        for quote, expected in cases:
+            with self.subTest(expected=expected):
+                source = USDataSource()
+                with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0, **quote}])), \
+                     patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                         "EPS_TTM": 2.0, "NET_PROFIT_TTM": 80.0, "CURRENCY": "USD",
+                         "REPORT_DATE": "2026-09-30",
+                     }])):
+                    record = source.get_current_pe("BABA")
+                self.assertEqual(record["market_cap_method"], expected)
+
+    def test_current_pe_preserves_quote_disagreement_and_single_source_diagnostic(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+            "close": 80.0, "quote_source": "akshare", "secondary_close": 100.0,
+            "secondary_quote_source": "sina",
+        }])), patch.object(source, "get_financials", return_value=pd.DataFrame([{
+            "EPS_TTM": 2.0, "NET_PROFIT_TTM": 80.0, "CURRENCY": "USD",
+            "REPORT_DATE": "2026-09-30",
+        }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertEqual(record["quote_source_count"], 2)
+        self.assertTrue(record["quote_disagreement"])
+        self.assertIn("quote_disagreement", record["validity_reason"])
+
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+             patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                 "EPS_TTM": 2.0, "NET_PROFIT_TTM": 80.0, "CURRENCY": "USD",
+                 "REPORT_DATE": "2026-09-30",
+             }])):
+            single = source.get_current_pe("BABA")
+        self.assertEqual(single["quote_source_count"], 1)
+        self.assertFalse(single["quote_disagreement"])
+        self.assertIn("single_quote_source", single["validity_reason"])
+
     def test_current_pe_maps_reported_profit_and_derives_hk_market_cap_from_eps(self):
         source = USDataSource()
         with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
@@ -574,9 +754,9 @@ class H30533SourceTests(unittest.TestCase):
         etl.h30533_source = MagicMock()
         etl.source = MagicMock()
         etl.h30533_source.get_snapshot.return_value = pd.DataFrame([
-            {"security_code": "BABA", "name": "Alibaba", "weight": 0.8,
+            {"security_code": "BABA", "name": "Alibaba", "weight": 0.95,
              "source_type": "csi_official", "as_of": "2026-10-13"},
-            {"security_code": "PDD", "name": "PDD", "weight": 0.2,
+            {"security_code": "PDD", "name": "PDD", "weight": 0.05,
              "source_type": "csi_official", "as_of": "2026-10-13"},
         ])
         etl.source.get_current_pe.side_effect = [
@@ -587,8 +767,8 @@ class H30533SourceTests(unittest.TestCase):
         with patch.object(etl, "_recompute_us_stats"):
             result = etl.run()
 
-        self.assertAlmostEqual(result.iloc[0]["pe_ratio"], 12.5)
-        self.assertAlmostEqual(result.iloc[0]["earnings_yield"], 0.08)
+        self.assertAlmostEqual(result.iloc[0]["pe_ratio"], 10.526315789473685)
+        self.assertAlmostEqual(result.iloc[0]["earnings_yield"], 0.095)
         self.assertEqual(result.iloc[0]["negative_profit_count"], 1)
         self.assertEqual(result.iloc[0]["index_code"], CHINA_INTL_INDEX_CODE)
         self.assertEqual(result.iloc[0]["source_type"], "csi_official")
