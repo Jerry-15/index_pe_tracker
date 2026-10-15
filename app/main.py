@@ -155,6 +155,32 @@ def build_detail_charts(pe_df, index_name):
     return fig_mv, fig_profit
 
 
+def render_quality_panel(latest, h30533=False):
+    """Show the same A/B/C quality evidence for live and H30533 views."""
+    if latest is None:
+        return
+    quality = latest.get("quality_level")
+    source = latest.get("source_type", latest.get("data_source"))
+    coverage = latest.get("weight_coverage", latest.get("coverage_ratio"))
+    fields = [f"等级 {quality or '--'}", f"来源 {source or '--'}",
+              f"覆盖 {coverage * 100:.1f}%" if pd.notna(coverage) else "覆盖 --",
+              f"财务截至 {latest.get('financial_as_of') or '--'}"]
+    diagnostics = []
+    for key, label in (("financial_stale_count", "财务过期"),
+                       ("derived_market_cap_count", "推导市值"),
+                       ("quote_disagreement_count", "行情冲突"),
+                       ("excluded_count", "排除")):
+        value = latest.get(key)
+        if pd.notna(value):
+            diagnostics.append(f"{label} {int(value)}")
+    caveat = latest.get("current_constituents_caveat")
+    if latest.get("current_constituents_backfill"):
+        diagnostics.append("历史回填")
+    st.info("质量面板 | " + " · ".join(fields) +
+            (" · " + " · ".join(diagnostics) if diagnostics else "") +
+            (f" | {caveat}" if caveat else ""))
+
+
 def run_update(index_code, index_name, progress_container):
     """执行数据更新"""
     etl = get_etl()
@@ -230,6 +256,7 @@ def _render_china_intl(us_etl):
     st.caption(f"财务截至：{financial_as_of or '--'}")
 
     if pe_df is not None and not pe_df.empty:
+        render_quality_panel(latest, h30533=True)
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("当前 PE(TTM)", f"{latest['pe_ratio']:.2f}" if pd.notna(latest.get('pe_ratio')) else "--")
         if "pe_mean" in pe_df.columns and pd.notna(latest.get("pe_mean")):
@@ -395,6 +422,7 @@ def _render_china_intl(us_etl):
     # 当前估值卡片
     if pe_df is not None and not pe_df.empty:
         latest = pe_df.iloc[-1]
+        render_quality_panel(latest)
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("当前 PE(TTM)", f"{latest['pe_ratio']:.2f}")
         if pd.notna(latest.get("pe_mean")):

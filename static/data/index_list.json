@@ -209,8 +209,8 @@
   "type": "h30533",
   "pe_ref": null,
   "stock_pe": [],
-  "last_updated": "2026-10-14",
-  "data_file": "CHINA_INTL.json",
+  "last_updated": null,
+  "data_file": "H30533.json",
   "source_type": null,
   "source_date": null,
   "constituent_as_of": null,
@@ -218,13 +218,27 @@
   "coverage": null,
   "counts": {
    "constituents": 0,
-   "valid": 34.0,
+   "valid": 0,
    "negative_profit": 0,
    "missing": 0
   },
-  "validity_reason": null,
+  "validity_reason": "H30533 snapshot is unavailable; no H30533 daily valuation rows",
   "stock_diagnostics": [],
-  "unavailable": false,
-  "generated_at": "2026-10-14T15:11:42+00:00"
+  "unavailable": true,
+  "generated_at": "2026-10-15T09:44:39+00:00",
+  "financial_as_of": null,
+  "quality_level": "C",
+  "source_url": null,
+  "fetched_at": null,
+  "response_hash": null,
+  "current_constituents_backfill": false,
+  "current_constituents_caveat": "historical values use current constituents",
+  "diagnostics": {
+   "financial_stale_count": 0,
+   "derived_market_cap_count": 0,
+   "quote_disagreement_count": 0,
+   "excluded_count": 0,
+   "invalid_count": 0
+  }
  }
 ]

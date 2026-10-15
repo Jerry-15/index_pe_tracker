@@ -52,7 +52,7 @@ def export_all():
                 stats_df[["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]],
                 on="trade_date", how="left",
             )
-        rows = _to_rows(pe_df)
+        rows = _to_rows(pe_df, generated_at=generated_at)
         if not rows:
             continue
         _save(code, rows)
@@ -76,7 +76,7 @@ def export_all():
                 stats_df[["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]],
                 on="trade_date", how="left",
             )
-        rows = _to_rows(pe_df)
+        rows = _to_rows(pe_df, generated_at=generated_at)
         if not rows:
             continue
         _save(code, rows)
@@ -118,8 +118,15 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
     except Exception:
         pass
     latest_row = pe_df.iloc[-1] if not pe_df.empty else pd.Series(dtype=object)
-    rows = _to_rows(pe_df, h30533=True) if not pe_df.empty else []
+    rows = _to_rows(pe_df, h30533=True, generated_at=generated_at) if not pe_df.empty else []
     code = "H30533"
+    if not rows:
+        legacy_path = OUT / "CHINA_INTL.json"
+        if legacy_path.exists():
+            with open(legacy_path, "r", encoding="utf-8") as f:
+                legacy_rows = json.load(f)
+            rows = [row + ["C", None, generated_at, None, None, "current_constituents_backfill", None]
+                    for row in legacy_rows]
     _save(code, rows)
 
     financial_as_of = _text(latest_row.get("financial_as_of"))
@@ -138,18 +145,29 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
         entry = {
             "code": "H30533", "name": "中证海外中国互联网50（H30533）", "type": "h30533",
             "pe_ref": None, "data_file": f"{code}.json",
-            "last_updated": _text(latest_row.get("trade_date")),
-            "source_type": _text(latest_row.get("source_type")),
-            "source_date": _text(latest_row.get("source_date")),
-            "constituent_as_of": _text(latest_row.get("constituent_as_of")),
-            "constituent_basis": _text(latest_row.get("constituent_basis")),
+            "last_updated": _text(latest_row.get("trade_date")) if not pe_df.empty else None,
+            "source_type": _text(latest_row.get("source_type")) if not pe_df.empty else None,
+            "source_date": _text(latest_row.get("source_date")) if not pe_df.empty else None,
+            "constituent_as_of": _text(latest_row.get("constituent_as_of")) if not pe_df.empty else None,
+            "constituent_basis": _text(latest_row.get("constituent_basis")) if not pe_df.empty else None,
             "financial_as_of": financial_as_of,
-            "coverage": _number(latest_row.get("weight_coverage")),
+            "coverage": _number(latest_row.get("weight_coverage")) if not pe_df.empty else None,
+            "quality_level": _text(latest_row.get("quality_level")) if not pe_df.empty else ("C" if rows else None),
+            "source_url": _text(latest_row.get("source_url")),
+            "fetched_at": _text(latest_row.get("fetched_at")),
+            "response_hash": _text(latest_row.get("response_hash")),
+            "current_constituents_backfill": bool(latest_row.get("current_constituents_backfill", False)) or not pe_df.empty and bool(rows),
+            "current_constituents_caveat": _text(latest_row.get("current_constituents_caveat")) or ("historical values use current constituents" if rows else None),
             "counts": {
                 "constituents": len(constituents),
                 "valid": _number(latest_row.get("valid_count", latest_row.get("stock_count"))) or 0,
                 "negative_profit": _number(latest_row.get("negative_profit_count")) or 0,
                 "missing": _number(latest_row.get("missing_count")) or 0,
+            },
+            "diagnostics": {
+                key: _number(latest_row.get(key)) or 0
+                for key in ("financial_stale_count", "derived_market_cap_count",
+                            "quote_disagreement_count", "excluded_count", "invalid_count")
             },
             "validity_reason": unavailable_reason or _text(latest_row.get("validity_reason")),
             "stock_diagnostics": _records(securities),
@@ -180,7 +198,7 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
         raise
 
 
-def _to_rows(pe_df: pd.DataFrame, h30533: bool = False) -> list:
+def _to_rows(pe_df: pd.DataFrame, h30533: bool = False, generated_at=None) -> list:
     """转换为紧凑行数组 [date, pe, mean, high, low, pct, mv, profit]"""
     df = pe_df.sort_values("trade_date").tail(MAX_DAYS)
     rows = []
@@ -202,11 +220,20 @@ def _to_rows(pe_df: pd.DataFrame, h30533: bool = False) -> list:
                         _number(r.get("missing_count")),
                         _text(r.get("source_type")), _text(r.get("source_date")),
                          _text(r.get("constituent_as_of")), _text(r.get("constituent_basis")),
-                         _text(r.get("validity_reason")), _text(r.get("financial_as_of"))])
+                         _text(r.get("validity_reason")), _text(r.get("financial_as_of")),
+                         _text(r.get("quality_level")), _text(r.get("source_type")),
+                         _text(r.get("generated_at")) or generated_at,
+                         _number(r.get("weight_coverage")),
+                         _text(r.get("financial_as_of")), _text(r.get("validity_reason")),
+                         None])
         else:
             row.extend([_number(r.get("valid_stock_count")),
                         _number(r.get("profitable_stock_count")),
-                        _number(r.get("coverage_ratio")), _text(r.get("validity_reason"))])
+                        _number(r.get("coverage_ratio")), _text(r.get("validity_reason")),
+                        _text(r.get("quality_level")), _text(r.get("data_source")),
+                        _text(r.get("generated_at")) or generated_at,
+                        _number(r.get("coverage_ratio")), _text(r.get("financial_as_of")),
+                        _text(r.get("validity_reason"))])
         rows.append(row)
     return rows
 

@@ -34,6 +34,7 @@
   .footer { text-align: center; color: #aaa; font-size: 12px; padding: 20px; }
   .loading { text-align: center; color: #999; padding: 40px; }
   .error { color: #b42318; background: #fff1f0; border: 1px solid #ffccc7; border-radius: 6px; padding: 10px 12px; font-size: 13px; }
+  .quality-panel { background:#eef6ff; border:1px solid #c9e0f5; border-radius:8px; padding:10px 12px; margin-bottom:14px; font-size:13px; }
 </style>
 </head>
 <body>
@@ -52,6 +53,7 @@
   </div>
 
   <div class="cards" id="cards"></div>
+  <div class="quality-panel" id="qualityPanel" style="display:none;"></div>
 
   <div class="chart-box" id="chartSectionA">
     <h3>指数 PE(TTM) 走势（灰色带 = 均值±1σ 正常区间）</h3>
@@ -176,6 +178,7 @@ function num(v, n=2) { return v == null ? '--' : v.toFixed(n); }
 function renderCards(meta, rows) {
   const last = rows[rows.length-1];
   const [d, pe, mean, high, low, pct] = last;
+  renderQuality(meta, last);
   const cards = document.getElementById('cards');
   const trend = (pct != null && mean != null) ? (pe > mean ? 'up' : 'down') : '';
   const zone = pct != null ? (pct>80?'偏贵':pct>60?'略高':pct>40?'合理':pct>20?'偏低':'低估') : '--';
@@ -191,8 +194,33 @@ function renderCards(meta, rows) {
   `;
 }
 
+function renderQuality(meta, row) {
+  const panel = document.getElementById('qualityPanel');
+  if (!meta) { panel.style.display = 'none'; return; }
+  const h30533 = meta.type === 'h30533';
+  const h30533Offset = h30533 ? (row.length >= 26 ? 1 : 0) : 0;
+  const quality = h30533 ? row[18 + h30533Offset] : row[12];
+  const source = h30533 ? row[19 + h30533Offset] : row[13];
+  const generated = h30533 ? row[20 + h30533Offset] : row[14];
+  const coverage = h30533 ? row[21 + h30533Offset] : row[15];
+  const financial = h30533 ? row[22 + h30533Offset] : row[16];
+  const reason = h30533 ? row[23 + h30533Offset] : row[17];
+  const diagnostics = h30533 && meta.diagnostics ? Object.entries(meta.diagnostics)
+    .filter(([, value]) => value != null && value !== 0)
+    .map(([key, value]) => `${key}: ${value}`).join(' · ') : '';
+  const backfill = h30533 && meta.current_constituents_backfill
+    ? ` · 历史回填：${meta.current_constituents_caveat || '使用当前成分股'}` : '';
+  panel.innerHTML = `<strong>数据质量 ${quality || '--'}</strong> · 来源 ${source || '--'} · ` +
+    `覆盖 ${coverage == null ? '--' : (Number(coverage) * 100).toFixed(1) + '%'} · ` +
+    `财务截至 ${financial || meta.financial_as_of || '--'} · 生成于 ${generated || meta.generated_at || '--'}` +
+    (reason ? ` · 有效性：${reason}` : '') + (diagnostics ? ` · ${diagnostics}` : '') + backfill;
+  panel.style.display = 'block';
+}
+
 function clearRenderedState() {
   document.getElementById('cards').innerHTML = '';
+  document.getElementById('qualityPanel').innerHTML = '';
+  document.getElementById('qualityPanel').style.display = 'none';
   document.getElementById('chartStockPE').innerHTML = '';
   Object.values(charts).forEach(chart => chart.clear());
 }

@@ -915,6 +915,7 @@ class H30533SourceTests(unittest.TestCase):
         self.assertIsNone(result["pe"])
         self.assertEqual(result["quality_level"], "C")
         self.assertEqual(result["weight_coverage"], 0.94)
+        self.assertEqual(result["validity_reason"], "insufficient weight coverage: 0.940000 < 0.950000")
 
     def test_h30533_excludes_stale_and_disputed_quotes_before_pe(self):
         rows = pd.DataFrame([
@@ -943,6 +944,8 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result["derived_market_cap_count"], 1)
         self.assertEqual(result["quality_level"], "B")
         self.assertEqual(result["pe"], 10.0)
+        self.assertEqual(result["financial_stale_count"], 0)
+        self.assertEqual(result["quote_disagreement_count"], 0)
 
     def test_h30533_output_can_be_recomputed_from_security_rows(self):
         rows = pd.DataFrame([

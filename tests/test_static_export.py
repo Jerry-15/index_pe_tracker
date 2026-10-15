@@ -13,7 +13,7 @@ class StaticExportTests(unittest.TestCase):
         root = Path(__file__).parents[1] / "static" / "data"
         index_list = json.loads((root / "index_list.json").read_text(encoding="utf-8"))
         entry = next(item for item in index_list if item["code"] == "H30533")
-        self.assertEqual(entry["data_file"], "CHINA_INTL.json")
+        self.assertEqual(entry["data_file"], "H30533.json")
         self.assertEqual(entry["type"], "h30533")
         self.assertTrue((root / entry["data_file"]).exists())
         rows = json.loads((root / entry["data_file"]).read_text(encoding="utf-8"))
@@ -152,6 +152,52 @@ class StaticExportTests(unittest.TestCase):
         entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
         self.assertEqual(entry["financial_as_of"], "2026-09-30")
         self.assertEqual(entry["stock_diagnostics"][0]["financial_as_of"], "2026-09-30")
+
+    def test_export_rows_include_quality_metadata_without_coercing_missing_pe(self):
+        rows = export_static_data._to_rows(pd.DataFrame([{
+            "trade_date": "2026-10-14", "pe_ratio": None,
+            "quality_level": "C", "source_type": "csi_official",
+            "generated_at": "2026-10-15T00:00:00+00:00", "weight_coverage": 0.94,
+            "financial_as_of": "2026-09-30", "validity_reason": "insufficient coverage",
+        }]), h30533=True, generated_at="2026-10-15T00:00:00+00:00")
+
+        self.assertIsNone(rows[0][1])
+        self.assertEqual(rows[0][-7:], ["C", "csi_official", "2026-10-15T00:00:00+00:00",
+                                        0.94, "2026-09-30", "insufficient coverage", None])
+
+    def test_h30533_entry_exports_quality_provenance_diagnostics_and_backfill(self):
+        class QualityCache:
+            def load_h30533_snapshot(self, code):
+                return {
+                    "daily": pd.DataFrame([{
+                        "trade_date": "2026-10-14", "pe_ratio": None,
+                        "quality_level": "C", "source_type": "etf_disclosure",
+                        "source_date": "2026-10-10", "constituent_as_of": "2026-10-10",
+                        "constituent_basis": "H30533", "weight_coverage": 0.94,
+                        "valid_count": 1, "negative_profit_count": 0, "missing_count": 1,
+                        "financial_stale_count": 1, "derived_market_cap_count": 0,
+                        "quote_disagreement_count": 0, "excluded_count": 2,
+                        "validity_reason": "financial_stale", "financial_as_of": "2026-09-30",
+                        "current_constituents_backfill": True,
+                        "current_constituents_caveat": "historical values use current constituents",
+                        "source_url": "https://source.test", "fetched_at": "2026-10-10T00:00:00Z",
+                        "response_hash": "abc",
+                    }]),
+                    "constituents": pd.DataFrame([{"security_code": "BABA"}]),
+                    "securities": pd.DataFrame([{"security_code": "BABA", "financial_as_of": "2026-09-30"}]),
+                }
+
+        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)):
+            (Path(self._tmpdir.name) / "index_list.json").write_text("[]", encoding="utf-8")
+            export_static_data._export_china_intl(QualityCache(), object(),
+                                                  generated_at="2026-10-15T00:00:00+00:00")
+
+        entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
+        self.assertEqual(entry["quality_level"], "C")
+        self.assertEqual(entry["source_url"], "https://source.test")
+        self.assertEqual(entry["diagnostics"]["financial_stale_count"], 1)
+        self.assertTrue(entry["current_constituents_backfill"])
+        self.assertIsNone(json.loads((Path(self._tmpdir.name) / "H30533.json").read_text())[0][1])
 
     def setUp(self):
         import tempfile
