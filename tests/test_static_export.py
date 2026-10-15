@@ -1,11 +1,50 @@
 import json
+import ast
+import tempfile
+import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 
 from scripts import export_static_data
 from scripts.export_static_data import _to_rows
+
+
+class StaticDeliveryTests(unittest.TestCase):
+    def test_export_catalog_preserves_existing_entries_and_manifest(self):
+        class EmptyCache:
+            def load_h30533_snapshot(self, code):
+                return {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            for code in ("000300", "801010"):
+                (output / f"{code}.json").write_text("[]")
+            (output / "index_list.json").write_text(json.dumps([
+                {"code": "000300", "name": "沪深300", "type": "index", "data_file": "000300.json"},
+                {"code": "801010", "name": "农林牧渔", "type": "industry", "data_file": "801010.json"},
+                {"code": "CHINA_INTL", "name": "旧名称", "data_file": "CHINA_INTL.json"},
+            ]))
+            with patch.object(export_static_data, "OUT", output), patch.object(export_static_data, "CacheDB", EmptyCache):
+                export_static_data.export_all()
+
+            index_list = json.loads((output / "index_list.json").read_text())
+            self.assertEqual([item["code"] for item in index_list], ["000300", "801010", "H30533"])
+            manifest = json.loads((output / "manifest.json").read_text())
+            self.assertEqual(set(manifest["artifacts"]), {
+                "index_list.json", "000300.json", "801010.json", "CHINA_INTL.json",
+            })
+
+    def test_main_definition_and_guard_prevent_import_nameerror(self):
+        source = Path(__file__).parents[1] / "app/main.py"
+        tree = ast.parse(source.read_text())
+        self.assertEqual(
+            [node.name for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main"],
+            ["main"],
+        )
+        self.assertIn("if __name__ == \"__main__\":\n    main()", source.read_text())
 
 
 def test_static_rows_are_strict_json_and_keep_validity_metadata():
@@ -98,6 +137,42 @@ def test_export_all_preserves_existing_entries_and_replaces_legacy_h30533(tmp_pa
 
     index_list = json.loads((tmp_path / "index_list.json").read_text())
     assert [item["code"] for item in index_list] == ["000300", "801010", "H30533"]
+
+
+def test_export_all_preserves_catalog_files_and_manifest_references(tmp_path, monkeypatch):
+    class EmptyCache:
+        def load_h30533_snapshot(self, code):
+            return {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
+
+    monkeypatch.setattr(export_static_data, "OUT", tmp_path)
+    monkeypatch.setattr(export_static_data, "CacheDB", EmptyCache)
+    for code in ("000300", "801010"):
+        (tmp_path / f"{code}.json").write_text("[]")
+    (tmp_path / "index_list.json").write_text(json.dumps([
+        {"code": "000300", "name": "沪深300", "type": "index", "data_file": "000300.json"},
+        {"code": "801010", "name": "农林牧渔", "type": "industry", "data_file": "801010.json"},
+        {"code": "CHINA_INTL", "name": "旧名称", "data_file": "CHINA_INTL.json"},
+    ]))
+
+    export_static_data.export_all()
+
+    index_list = json.loads((tmp_path / "index_list.json").read_text())
+    assert [item["code"] for item in index_list] == ["000300", "801010", "H30533"]
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert set(manifest["artifacts"]) == {"index_list.json", "000300.json", "801010.json", "CHINA_INTL.json"}
+
+
+def test_main_entrypoint_is_defined_and_importable_without_streamlit_server():
+    source = Path(__file__).parents[1] / "app/main.py"
+    tree = __import__("ast").parse(source.read_text())
+    main_defs = [node for node in tree.body if isinstance(node, __import__("ast").FunctionDef) and node.name == "main"]
+    assert len(main_defs) == 1
+    assert any(
+        isinstance(node, __import__("ast").If)
+        and isinstance(node.test, __import__("ast").Compare)
+        and any(isinstance(child, __import__("ast").Call) and getattr(child.func, "id", None) == "main" for child in node.body)
+        for node in tree.body
+    )
 
 
 def test_h30533_metadata_has_canonical_delivery_fields(tmp_path, monkeypatch):

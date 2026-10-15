@@ -298,6 +298,7 @@ def _render_china_intl(us_etl):
         st.info("暂无 H30533 数据，请点击左侧「更新数据」开始拉取。")
         st.markdown("**首次运行说明：** H30533 成分快照、证券财务截至日期、来源、覆盖率和有效性原因会随数据保存。")
 
+def main():
     etl = get_etl()
     us_etl = USETL()
 
