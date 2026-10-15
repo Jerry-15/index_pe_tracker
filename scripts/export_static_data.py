@@ -32,7 +32,12 @@ def export_all():
     source = get_source()
     OUT.mkdir(parents=True, exist_ok=True)
 
-    index_list = []
+    list_path = OUT / "index_list.json"
+    if list_path.exists():
+        with open(list_path, "r", encoding="utf-8") as f:
+            index_list = json.load(f)
+    else:
+        index_list = []
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
     # 宽基指数
@@ -51,10 +56,12 @@ def export_all():
         if not rows:
             continue
         _save(code, rows)
-        index_list.append({
+        entry = {
             "code": code, "name": name, "type": "index",
             "pe_ref": _get_reference_pe(source, name),
-        })
+        }
+        index_list = [item for item in index_list if item.get("code") != code]
+        index_list.append(entry)
 
     # 申万行业
     ref = source.get_industry_reference()
@@ -73,13 +80,15 @@ def export_all():
         if not rows:
             continue
         _save(code, rows)
-        index_list.append({
+        entry = {
             "code": code, "name": name, "type": "industry",
             "pe_ref": float(r["pe_ttm"]) if pd.notna(r["pe_ttm"]) else None,
-        })
+        }
+        index_list = [item for item in index_list if item.get("code") != code]
+        index_list.append(entry)
 
     # 保存指数列表
-    with open(OUT / "index_list.json", "w", encoding="utf-8") as f:
+    with open(list_path, "w", encoding="utf-8") as f:
         json.dump(index_list, f, ensure_ascii=False, indent=1)
 
     # 导出中概互联网数据
@@ -110,7 +119,7 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
         pass
     latest_row = pe_df.iloc[-1] if not pe_df.empty else pd.Series(dtype=object)
     rows = _to_rows(pe_df, h30533=True) if not pe_df.empty else []
-    code = "CHINA_INTL"
+    code = "H30533"
     _save(code, rows)
 
     financial_as_of = _text(latest_row.get("financial_as_of"))
@@ -225,8 +234,12 @@ def _save(code: str, rows: list):
 
 
 def _save_manifest(generated_at):
+    artifacts = sorted(
+        path.name for path in OUT.glob("*.json") if path.name != "manifest.json"
+    )
     with open(OUT / "manifest.json", "w", encoding="utf-8") as f:
-        json.dump({"generated_at": generated_at, "index_list": "index_list.json"}, f,
+        json.dump({"generated_at": generated_at, "index_list": "index_list.json",
+                   "artifacts": artifacts}, f,
                   ensure_ascii=False, indent=1)
 
 
