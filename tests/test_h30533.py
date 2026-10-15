@@ -11,7 +11,8 @@ from data_sources.h30533 import H30533Source, H30533SourceError
 from data_sources.us import USDataSource
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
 from cache.db import CacheDB
-from etl.pipeline_us import USETL
+from etl.pipeline_us import USETL, aggregate_h30533
+from etl.quality import quality_level
 
 
 class H30533SourceTests(unittest.TestCase):
@@ -516,21 +517,23 @@ class H30533SourceTests(unittest.TestCase):
         etl.h30533_source = MagicMock()
         etl.source = MagicMock()
         etl.h30533_source.get_snapshot.return_value = pd.DataFrame([
-            {"security_code": "BABA", "name": "Alibaba", "weight": 0.8,
+            {"security_code": "BABA", "name": "Alibaba", "weight": 0.96,
              "source_type": "csi_official", "as_of": "2026-10-13"},
-            {"security_code": "PDD", "name": "PDD", "weight": 0.2,
+            {"security_code": "PDD", "name": "PDD", "weight": 0.04,
              "source_type": "csi_official", "as_of": "2026-10-13"},
         ])
         etl.source.get_current_pe.side_effect = [
-            {"price": 80.0, "verified_shares": 10.0, "profit_ttm": 80.0},
-            {"price": 50.0, "market_cap": 500.0, "profit_ttm": -5.0},
+            {"price": 80.0, "verified_shares": 10.0, "profit_ttm": 80.0,
+             "financial_as_of": "2026-10-01"},
+            {"price": 50.0, "market_cap": 500.0, "profit_ttm": -5.0,
+             "financial_as_of": "2026-10-01"},
         ]
 
         with patch.object(etl, "_recompute_us_stats"):
             result = etl.run()
 
-        self.assertEqual(result.iloc[0]["pe_ratio"], 10.0)
-        self.assertEqual(result.iloc[0]["earnings_yield"], 0.1)
+        self.assertAlmostEqual(result.iloc[0]["pe_ratio"], 1 / 0.096)
+        self.assertAlmostEqual(result.iloc[0]["earnings_yield"], 0.096)
         self.assertEqual(result.iloc[0]["negative_profit_count"], 1)
         self.assertEqual(result.iloc[0]["index_code"], CHINA_INTL_INDEX_CODE)
         self.assertEqual(result.iloc[0]["source_type"], "csi_official")
@@ -555,8 +558,10 @@ class H30533SourceTests(unittest.TestCase):
                  "source_type": "csi_official", "as_of": "2026-10-13"},
             ])
             etl.source.get_current_pe.side_effect = [
-                {"price": 80.0, "validity_reason": "missing profit_ttm"},
-                {"price": 50.0, "profit_ttm": -5.0, "validity_reason": "negative profit"},
+                {"price": 80.0, "financial_as_of": "2026-10-01",
+                 "validity_reason": "missing profit_ttm"},
+                {"price": 50.0, "profit_ttm": -5.0,
+                 "financial_as_of": "2026-10-01", "validity_reason": "negative profit"},
             ]
 
             result = etl.run()
@@ -565,7 +570,8 @@ class H30533SourceTests(unittest.TestCase):
             self.assertIsNone(result.iloc[0]["index_pe"])
             self.assertEqual(result.iloc[0]["valid_count"], 0)
             self.assertEqual(result.iloc[0]["missing_count"], 2)
-            self.assertEqual(result.iloc[0]["validity_reason"], "no valid security valuations")
+            self.assertIn("missing profit_ttm", result.iloc[0]["validity_reason"])
+            self.assertIn("negative profit", result.iloc[0]["validity_reason"])
             self.assertEqual(len(loaded["constituents"]), 2)
             self.assertEqual(len(loaded["stock_pe"]), 2)
             self.assertEqual(loaded["pe_data"].iloc[0]["valid_count"], 0)
@@ -898,6 +904,62 @@ class H30533SourceTests(unittest.TestCase):
 
         self.assertIn("financial_stale", record["validity_reason"])
         self.assertNotIn("stale_financial", record["validity_reason"])
+
+    def test_h30533_coverage_below_default_gate_is_quality_c_without_pe(self):
+        result = aggregate_h30533(pd.DataFrame([{
+            "weight": 0.94, "market_cap": 100.0, "profit_ttm": 10.0,
+            "financial_as_of": "2026-10-13", "as_of": "2026-10-13",
+        }]))
+
+        self.assertIsNone(result["pe"])
+        self.assertEqual(result["quality_level"], "C")
+        self.assertEqual(result["weight_coverage"], 0.94)
+
+    def test_h30533_excludes_stale_and_disputed_quotes_before_pe(self):
+        rows = pd.DataFrame([
+            {"weight": 0.5, "market_cap": 100.0, "profit_ttm": 10.0,
+             "financial_as_of": "2020-01-01", "as_of": "2026-10-13"},
+            {"weight": 0.5, "market_cap": 100.0, "profit_ttm": 10.0,
+             "financial_as_of": "2026-10-01", "as_of": "2026-10-13",
+             "quote_disagreement": True},
+        ])
+
+        result = aggregate_h30533(rows, min_weight_coverage=0.0)
+
+        self.assertIsNone(result["pe"])
+        self.assertEqual(result["financial_stale_count"], 1)
+        self.assertEqual(result["quote_disagreement_count"], 1)
+        self.assertEqual(result["excluded_count"], 2)
+
+    def test_h30533_derived_market_cap_caps_quality_at_b(self):
+        result = aggregate_h30533(pd.DataFrame([{
+            "weight": 1.0, "price": 10.0, "verified_shares": 10.0,
+            "profit_ttm": 10.0, "financial_as_of": "2026-10-13",
+            "as_of": "2026-10-13", "source_type": "csi_official",
+        }]))
+
+        self.assertEqual(result["derived_market_cap_count"], 1)
+        self.assertEqual(result["quality_level"], "B")
+        self.assertEqual(result["pe"], 10.0)
+
+    def test_h30533_output_can_be_recomputed_from_security_rows(self):
+        rows = pd.DataFrame([
+            {"weight": 0.6, "market_cap": 100.0, "profit_ttm": 10.0,
+             "financial_as_of": "2026-10-13", "as_of": "2026-10-13"},
+            {"weight": 0.4, "market_cap": 50.0, "profit_ttm": 5.0,
+             "financial_as_of": "2026-10-13", "as_of": "2026-10-13"},
+        ])
+
+        result = aggregate_h30533(rows)
+        recomputed_yield = sum(
+            row.weight * row.profit_ttm / row.market_cap
+            for row in rows.itertuples()
+        )
+
+        self.assertAlmostEqual(result["earnings_yield"], recomputed_yield)
+        self.assertAlmostEqual(result["pe"], 1 / recomputed_yield)
+        self.assertIn("quality_level", result)
+        self.assertIn("validity_reason", result)
 
 
 if __name__ == "__main__":

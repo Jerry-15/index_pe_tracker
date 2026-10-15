@@ -8,6 +8,135 @@ from data_sources.us import USDataSource
 from cache.db import CacheDB
 from config import API_BATCH_DELAY, CHINA_INTL_STOCKS, US_REF_PE
 from data_sources.h30533 import H30533Source
+from etl.quality import append_reason, is_stale, quality_level
+
+
+def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.95,
+                     fx_rates: Optional[dict] = None) -> dict:
+    """Aggregate eligible securities without renormalizing surviving weights."""
+    if not 0 <= min_weight_coverage <= 1:
+        raise ValueError("min_weight_coverage must be between 0 and 1")
+
+    coverage = 0.0
+    earnings_yield = 0.0
+    valid_count = 0
+    negative_profit_count = 0
+    missing_count = 0
+    invalid_count = 0
+    financial_stale_count = 0
+    derived_market_cap_count = 0
+    quote_disagreement_count = 0
+    excluded_count = 0
+    reasons = []
+    fx_rates = fx_rates or {}
+
+    for _, row in rows.iterrows():
+        try:
+            weight = float(row.get("weight"))
+        except (TypeError, ValueError):
+            invalid_count += 1
+            excluded_count += 1
+            continue
+        if not np.isfinite(weight) or weight < 0:
+            invalid_count += 1
+            excluded_count += 1
+            continue
+        reason = row.get("validity_reason")
+        if is_stale(row.get("financial_as_of"), row.get("as_of") or row.get("constituent_as_of")):
+            financial_stale_count += 1
+            excluded_count += 1
+            reasons.append("financial_stale")
+            continue
+        if bool(row.get("quote_disagreement")):
+            quote_disagreement_count += 1
+            excluded_count += 1
+            reasons.append("quote_disagreement")
+            continue
+
+        market_cap = row.get("market_cap")
+        method = row.get("market_cap_method")
+        if market_cap is None or pd.isna(market_cap):
+            shares, price = row.get("verified_shares"), row.get("price")
+            if shares is not None and price is not None and not pd.isna(shares) and not pd.isna(price):
+                try:
+                    market_cap = float(shares) * float(price)
+                    method = method or "price_times_reported_shares"
+                except (TypeError, ValueError):
+                    market_cap = None
+            if market_cap is None and row.get("profit_ttm") is not None and row.get("eps_ttm"):
+                try:
+                    market_cap = float(row["price"]) * float(row["profit_ttm"]) / float(row["eps_ttm"])
+                    method = method or "derived_profit_div_eps"
+                except (TypeError, ValueError, ZeroDivisionError):
+                    market_cap = None
+        if method in ("price_times_reported_shares", "derived_profit_div_eps"):
+            derived_market_cap_count += 1
+        profit = row.get("profit_ttm")
+        if market_cap is None or profit is None or pd.isna(market_cap) or pd.isna(profit):
+            missing_count += 1
+            excluded_count += 1
+            reasons.append(reason or "missing valuation")
+            continue
+        try:
+            market_cap, profit = float(market_cap), float(profit)
+        except (TypeError, ValueError):
+            invalid_count += 1
+            excluded_count += 1
+            continue
+        if not np.isfinite(market_cap) or not np.isfinite(profit) or market_cap <= 0:
+            invalid_count += 1
+            excluded_count += 1
+            continue
+        market_currency = str(row.get("market_cap_currency") or row.get("currency") or "").upper()
+        profit_currency = str(row.get("profit_currency") or row.get("currency") or "").upper()
+        if market_currency and profit_currency and market_currency != profit_currency:
+            rate = fx_rates.get(f"{profit_currency}/{market_currency}")
+            if rate is None:
+                missing_count += 1
+                excluded_count += 1
+                reasons.append("currency_unavailable")
+                continue
+            profit /= float(rate)
+        if profit <= 0:
+            negative_profit_count += 1
+            excluded_count += 1
+            continue
+        coverage += weight
+        earnings_yield += weight * profit / market_cap
+        valid_count += 1
+
+    quality = quality_level(
+        source_type=rows.iloc[0].get("source_type") if not rows.empty else None,
+        weight_coverage=coverage,
+        financial_stale_count=financial_stale_count,
+        derived_market_cap_count=derived_market_cap_count,
+        quote_disagreement_count=quote_disagreement_count,
+    )
+    if coverage < min_weight_coverage:
+        reasons.append(f"insufficient weight coverage: {coverage:.6f} < {min_weight_coverage:.6f}")
+    validity_reason = None
+    for reason in reasons:
+        validity_reason = append_reason(validity_reason, reason)
+    valid = coverage >= min_weight_coverage and earnings_yield > 0 and not financial_stale_count and not quote_disagreement_count
+    return {
+        "pe": 1 / earnings_yield if valid else None,
+        "earnings_yield": earnings_yield,
+        "weight_coverage": coverage,
+        "valid_weight": coverage,
+        "total_weight": float(pd.to_numeric(rows.get("weight"), errors="coerce").fillna(0).sum()) if not rows.empty else 0.0,
+        "valid_count": valid_count,
+        "missing_count": missing_count,
+        "negative_profit_count": negative_profit_count,
+        "invalid_count": invalid_count,
+        "financial_stale_count": financial_stale_count,
+        "derived_market_cap_count": derived_market_cap_count,
+        "quote_disagreement_count": quote_disagreement_count,
+        "excluded_count": excluded_count,
+        "quality_level": quality,
+        "valid": valid,
+        "reason": validity_reason,
+        "validity_reason": validity_reason,
+    }
 
 
 class USETL:
@@ -96,6 +225,13 @@ class USETL:
                 "issuer_id": constituent.get("issuer_id"), "weight": constituent.get("weight"),
                 "price": price, "currency": record.get("currency"), "market_cap": market_cap,
                 "verified_shares": shares, "profit_ttm": profit,
+                "as_of": constituent.get("as_of"),
+                "market_cap_method": record.get("market_cap_method") or (
+                    "price_times_reported_shares" if market_cap is not None and record.get("market_cap") is None else None
+                ),
+                "quote_disagreement": record.get("quote_disagreement", False),
+                "source_url": constituent.get("source_url"),
+                "response_hash": constituent.get("response_hash"),
                 "earnings_yield": (profit / market_cap) if valid else None,
                 "index_pe": pe if valid else None, "pe": pe if valid else None,
                 "financial_as_of": record.get("financial_as_of"),
@@ -108,7 +244,12 @@ class USETL:
                 results.append(valuation_rows[-1])
             time.sleep(API_BATCH_DELAY)
 
-        if not results:
+        aggregate = aggregate_h30533(
+            pd.DataFrame(valuation_rows),
+            fx_rates={"CNY/USD": self.source._get_fx_rate()},
+        )
+
+        if not results or aggregate["pe"] is None:
             today = pd.Timestamp.today().strftime("%Y-%m-%d")
             diagnostic = pd.DataFrame([{
                 "trade_date": today,
@@ -120,17 +261,21 @@ class USETL:
                 "total_profit_ttm": None,
                 "stock_count": total,
                 "valid_count": 0,
-                "weight_coverage": 0.0,
-                "negative_profit_count": sum(
-                    1 for row in valuation_rows
-                    if row.get("profit_ttm") is not None and row["profit_ttm"] < 0
-                ),
-                "missing_count": total,
+                "weight_coverage": aggregate["weight_coverage"],
+                "negative_profit_count": aggregate["negative_profit_count"],
+                "missing_count": aggregate["missing_count"],
+                "financial_stale_count": aggregate["financial_stale_count"],
+                "derived_market_cap_count": aggregate["derived_market_cap_count"],
+                "quote_disagreement_count": aggregate["quote_disagreement_count"],
+                "excluded_count": aggregate["excluded_count"],
+                "quality_level": aggregate["quality_level"],
                 "source_type": constituents.iloc[0].get("source_type") if total else None,
                 "source_date": constituents.iloc[0].get("as_of") if total else None,
                 "constituent_as_of": constituents.iloc[0].get("as_of") if total else None,
                 "constituent_basis": "H30533",
-                "validity_reason": "no valid security valuations",
+                "source_url": constituents.iloc[0].get("source_url") if total else None,
+                "response_hash": constituents.iloc[0].get("response_hash") if total else None,
+                "validity_reason": aggregate["validity_reason"] or "no valid security valuations",
             }])
             self.cache.save_h30533_snapshot(
                 self.index_code, constituents, diagnostic, pd.DataFrame(valuation_rows)
@@ -140,30 +285,34 @@ class USETL:
         df = pd.DataFrame(results)
         today = pd.Timestamp.today().strftime("%Y-%m-%d")
 
-        # 市值加权PE = Σ(MV_i) / Σ(Profit_i)，MV_proxy = price²/pe
-        mvs = df["market_cap"].astype(float).values
-        pes = df["pe"].astype(float).values
-        total_mv = float(mvs.sum())
-        total_profit = float(total_mv / (float((mvs * pes).sum() / total_mv)))
-        index_pe = float((mvs * pes).sum() / total_mv)
+        index_pe = aggregate["pe"]
+        total_mv = float(sum(row["market_cap"] for row in valuation_rows if row in results))
+        total_profit = float(total_mv / index_pe) if index_pe else None
 
         row = {
             "trade_date": today,
             "index_code": self.index_code,
             "index_pe": index_pe,
-            "earnings_yield": 1 / index_pe,
+            "earnings_yield": aggregate["earnings_yield"],
             "total_market_cap": round(total_mv, 6),
             "total_profit_ttm": round(total_profit, 6),
             "pe_ratio": index_pe,
-            "stock_count": len(df), "valid_count": len(df),
-            "weight_coverage": float(sum(row.get("weight") or 0 for row in results)),
-            "negative_profit_count": sum(1 for row in valuation_rows if row.get("profit_ttm") is not None and row["profit_ttm"] < 0),
-            "missing_count": len(valuation_rows) - len(df),
+            "stock_count": aggregate["valid_count"], "valid_count": aggregate["valid_count"],
+            "weight_coverage": aggregate["weight_coverage"],
+            "negative_profit_count": aggregate["negative_profit_count"],
+            "missing_count": aggregate["missing_count"],
+            "financial_stale_count": aggregate["financial_stale_count"],
+            "derived_market_cap_count": aggregate["derived_market_cap_count"],
+            "quote_disagreement_count": aggregate["quote_disagreement_count"],
+            "excluded_count": aggregate["excluded_count"],
+            "quality_level": aggregate["quality_level"],
             "source_type": constituents.iloc[0].get("source_type"),
             "source_date": constituents.iloc[0].get("as_of"),
             "constituent_as_of": constituents.iloc[0].get("as_of"),
             "constituent_basis": "H30533",
-            "validity_reason": None,
+            "source_url": constituents.iloc[0].get("source_url"),
+            "response_hash": constituents.iloc[0].get("response_hash"),
+            "validity_reason": aggregate["validity_reason"],
         }
         pe_df = pd.DataFrame([row])
 
@@ -332,6 +481,16 @@ class USETL:
         if results:
             pe_df = pd.DataFrame(results)
             pe_df = pe_df.sort_values("trade_date").reset_index(drop=True)
+            source_meta = getattr(self.h30533_source, "source_metadata", {}) or {}
+            pe_df["quality_level"] = "C"
+            pe_df["financial_stale_count"] = 0
+            pe_df["derived_market_cap_count"] = 0
+            pe_df["quote_disagreement_count"] = 0
+            pe_df["excluded_count"] = 0
+            pe_df["validity_reason"] = "current_constituents_backfill"
+            pe_df["current_constituents_backfill"] = True
+            pe_df["source_url"] = source_meta.get("source_url")
+            pe_df["response_hash"] = source_meta.get("response_hash")
             window = min(500, len(pe_df))
             pe_df["pe_mean"] = pe_df["pe_ratio"].rolling(window=window, min_periods=max(60, window // 2)).mean()
             pe_df["pe_std"] = pe_df["pe_ratio"].rolling(window=window, min_periods=max(60, window // 2)).std()
