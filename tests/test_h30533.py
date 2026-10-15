@@ -18,6 +18,25 @@ from scripts import export_static_data
 
 
 class H30533SourceTests(unittest.TestCase):
+    @patch("data_sources.h30533.requests.get")
+    def test_request_sends_required_headers_for_etf(self, get):
+        response = MagicMock()
+        response.json.return_value = {}
+        get.return_value = response
+        source = H30533Source(timeout=7)
+
+        source._request(source.ETF_URL, {"type": "jjcc"})
+
+        get.assert_called_once_with(
+            source.ETF_URL,
+            params={"type": "jjcc"},
+            timeout=7,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://fundf10.eastmoney.com/ccmx_513050.html",
+            },
+        )
+
     def test_static_export_uses_h30533_snapshot_and_exports_metadata(self):
         class FakeCache:
             def load_h30533_snapshot(self, index_code):
@@ -331,7 +350,17 @@ class H30533SourceTests(unittest.TestCase):
         result = source.get_snapshot()
 
         self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
-        self.assertEqual(calls, [{"indexCode": CHINA_INTL_INDEX_CODE}, {"fundCode": CHINA_INTL_FUND_CODE}])
+        self.assertEqual(calls, [
+            {"indexCode": CHINA_INTL_INDEX_CODE},
+            {
+                "type": "jjcc",
+                "code": CHINA_INTL_FUND_CODE,
+                "topline": "10",
+                "year": "",
+                "month": "",
+                "rt": "1",
+            },
+        ])
         self.assertEqual(source.source_errors[0]["code"], "wrong_index")
         self.assertEqual(source.source_errors[0]["details"]["expected"], CHINA_INTL_INDEX_CODE)
 
@@ -406,6 +435,75 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(record["market_cap"], 800.0)
         self.assertEqual(record["verified_shares"], 10.0)
         self.assertEqual(record["profit_ttm"], 80.0)
+
+    def test_current_pe_maps_reported_profit_and_derives_hk_market_cap_from_eps(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+            "close": 12.0,
+        }])), patch.object(source, "get_financials", return_value=pd.DataFrame([{
+            "EPS_TTM": 2.0,
+            "HOLDER_PROFIT": 100.0,
+            "CURRENCY": "HKD",
+            "REPORT_DATE": "2026-09-30",
+        }])):
+            record = source.get_current_pe("00700.HK")
+
+        self.assertEqual(record["profit_ttm"], 100.0)
+        self.assertEqual(record["verified_shares"], 50.0)
+        self.assertEqual(record["market_cap"], 600.0)
+        self.assertEqual(record["market_cap_currency"], "HKD")
+        self.assertEqual(record["profit_currency"], "HKD")
+        self.assertEqual(record["pe"], 6.0)
+
+    def test_current_pe_derives_us_ads_market_cap_from_ordinary_shares(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+            "close": 80.0,
+        }])), patch.object(source, "get_financials", return_value=pd.DataFrame([{
+            "EPS_TTM": 2.0,
+            "PARENT_HOLDER_NETPROFIT": 80.0,
+            "CURRENCY": "USD",
+            "REPORT_DATE": "2026-09-30",
+        }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertEqual(record["profit_ttm"], 80.0)
+        self.assertEqual(record["verified_shares"], 40.0)
+        self.assertEqual(record["market_cap"], 400.0)
+        self.assertEqual(record["market_cap_currency"], "USD")
+        self.assertEqual(record["pe"], 5.0)
+
+    def test_current_pe_marks_invalid_report_date_unavailable(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+            "close": 80.0,
+        }])), patch.object(source, "get_financials", return_value=pd.DataFrame([{
+            "EPS_TTM": 2.0,
+            "PARENT_HOLDER_NETPROFIT": 80.0,
+            "CURRENCY": "USD",
+            "REPORT_DATE": "not-a-date",
+        }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertIsNone(record["financial_as_of"])
+        self.assertIn("invalid financial_as_of", record["validity_reason"])
+        self.assertNotIn("pe", record)
+
+    def test_current_pe_marks_unverified_currency_unavailable(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+            "close": 80.0,
+        }])), patch.object(source, "get_financials", return_value=pd.DataFrame([{
+            "EPS_TTM": 2.0,
+            "PARENT_HOLDER_NETPROFIT": 80.0,
+            "CURRENCY": "EUR",
+            "REPORT_DATE": "2026-09-30",
+        }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertIsNone(record["currency"])
+        self.assertIn("unsupported currency", record["validity_reason"])
+        self.assertNotIn("pe", record)
 
     def test_pipeline_aggregates_snapshot_records_with_negative_profit_count(self):
         etl = USETL(cache=MagicMock())
@@ -547,6 +645,50 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]["weight"], 0.071)
         self.assertEqual(source.last_source_type, "etf_disclosure")
 
+    def test_parse_live_etf_disclosure_script_fixture(self):
+        fixture = Path(__file__).parent / "fixtures" / "fund_513050_holdings.js"
+        source = H30533Source()
+
+        result = source.parse_etf_disclosure(fixture.read_text())
+
+        self.assertEqual(result["as_of"].unique().tolist(), ["2026-06-30"])
+        self.assertEqual(result["security_code"].tolist(), ["00700.HK", "BABA"])
+        self.assertEqual(result["name"].tolist(), ["腾讯控股", "阿里巴巴"])
+        self.assertEqual(result["weight"].tolist(), [0.0825, 0.051])
+        self.assertEqual(result["source_type"].unique().tolist(), ["etf_disclosure"])
+
+    def test_get_snapshot_uses_eastmoney_etf_request_contract(self):
+        calls = []
+        fixture = Path(__file__).parent / "fixtures" / "fund_513050_holdings.js"
+
+        self.assertEqual(
+            H30533Source.ETF_URL,
+            "https://fundf10.eastmoney.com/FundArchivesDatas.aspx",
+        )
+
+        def fetcher(url, params):
+            calls.append((url, params))
+            if params.get("indexCode"):
+                raise RuntimeError("CSI unavailable")
+            return fixture.read_text()
+
+        source = H30533Source(fetcher=fetcher, retries=0)
+
+        result = source.get_snapshot()
+
+        self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
+        self.assertEqual(calls, [
+            (source.official_url, {"indexCode": CHINA_INTL_INDEX_CODE}),
+            (source.etf_url, {
+                "type": "jjcc",
+                "code": CHINA_INTL_FUND_CODE,
+                "topline": "10",
+                "year": "",
+                "month": "",
+                "rt": "1",
+            }),
+        ])
+
     def test_missing_code_and_weight_are_rejected_with_reasons(self):
         source = H30533Source()
         result = source.parse_official({
@@ -663,7 +805,17 @@ class H30533SourceTests(unittest.TestCase):
         result = source.get_snapshot()
 
         self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
-        self.assertEqual(calls, [{"indexCode": CHINA_INTL_INDEX_CODE}, {"fundCode": CHINA_INTL_FUND_CODE}])
+        self.assertEqual(calls, [
+            {"indexCode": CHINA_INTL_INDEX_CODE},
+            {
+                "type": "jjcc",
+                "code": CHINA_INTL_FUND_CODE,
+                "topline": "10",
+                "year": "",
+                "month": "",
+                "rt": "1",
+            },
+        ])
 
     def test_get_snapshot_deduplicates_and_canonicalizes_issuer_ids(self):
         def fetcher(url, params):
