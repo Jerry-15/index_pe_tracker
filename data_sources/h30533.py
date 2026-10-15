@@ -112,7 +112,7 @@ class H30533Source:
     )
     ETF_URL = os.getenv(
         "H30533_ETF_URL",
-        "https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=513050&topline=10&year=&month=&rt=1",
+        "https://fundf10.eastmoney.com/FundArchivesDatas.aspx",
     )
     REQUIRED_COLUMNS = [
         "index_code", "security_code", "name", "exchange", "weight",

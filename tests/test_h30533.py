@@ -573,6 +573,11 @@ class H30533SourceTests(unittest.TestCase):
         calls = []
         fixture = Path(__file__).parent / "fixtures" / "fund_513050_holdings.js"
 
+        self.assertEqual(
+            H30533Source.ETF_URL,
+            "https://fundf10.eastmoney.com/FundArchivesDatas.aspx",
+        )
+
         def fetcher(url, params):
             calls.append((url, params))
             if params.get("indexCode"):
