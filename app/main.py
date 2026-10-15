@@ -250,30 +250,7 @@ def _render_china_intl(us_etl):
 
         with tab1:
             if not pe_df.empty and "pe_ratio" in pe_df.columns:
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=pe_df["trade_date"], y=pe_df["pe_ratio"],
-                    name="指数PE(TTM)", line=dict(color=CHART_COLORS["pe"], width=2),
-                ))
-                if "pe_mean" in pe_df.columns and pe_df["pe_mean"].notna().any():
-                    fig.add_trace(go.Scatter(
-                        x=pe_df["trade_date"], y=pe_df["pe_mean"],
-                        name="滚动均值", line=dict(color=CHART_COLORS["mean"], width=1.5, dash="dash"),
-                    ))
-                    fig.add_trace(go.Scatter(
-                        x=pe_df["trade_date"], y=pe_df["pe_high_line"],
-                        name="高估线(均值+1σ)", line=dict(color=CHART_COLORS["high_line"], width=1.5, dash="dot"),
-                    ))
-                    fig.add_trace(go.Scatter(
-                        x=pe_df["trade_date"], y=pe_df["pe_low_line"],
-                        name="低估线(均值-1σ)", line=dict(color=CHART_COLORS["low_line"], width=1.5, dash="dot"),
-                    ))
-                fig.update_layout(
-                    title=f"<b>H30533</b> — PE(TTM) 历史走势",
-                    xaxis_title="日期", yaxis_title="市盈率 (PE)",
-                    height=450, hovermode="x unified",
-                    template="plotly_white",
-                )
+                fig = build_pe_chart(pe_df, "中证海外中国互联网50（H30533）")
                 st.plotly_chart(fig, use_container_width=True)
 
         with tab2:

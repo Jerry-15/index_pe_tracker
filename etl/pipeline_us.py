@@ -7,6 +7,7 @@ from data_sources.h30533 import H30533Source
 from data_sources.us import USDataSource
 from cache.db import CacheDB
 from config import API_BATCH_DELAY, CHINA_INTL_INDEX_CODE
+from etl.stats import add_valuation_stats, STAT_COLUMNS
 
 
 def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8,
@@ -213,6 +214,11 @@ class USETL:
         }
         pe_df = pd.DataFrame([row])
 
+        existing = self.cache.load_h30533_snapshot(self.index_code)["daily"]
+        if isinstance(existing, pd.DataFrame) and not existing.empty:
+            pe_df = pd.concat([existing, pe_df], ignore_index=True)
+            pe_df = pe_df.drop_duplicates("trade_date", keep="last")
+        pe_df = add_valuation_stats(pe_df)
         self.cache.save_h30533_snapshot(
             self.index_code, snapshot, pe_df, pd.DataFrame(valuation_rows)
         )
@@ -250,18 +256,9 @@ class USETL:
         pe_df = self.cache.load_us_pe_daily()
         if pe_df.empty:
             return
-        pe_df = pe_df.copy().sort_values("trade_date").reset_index(drop=True)
-        window = min(500, len(pe_df))
-        pe_df["pe_mean"] = pe_df["pe_ratio"].rolling(window=window, min_periods=max(60, window // 2)).mean()
-        pe_df["pe_std"] = pe_df["pe_ratio"].rolling(window=window, min_periods=max(60, window // 2)).std()
-        pe_df["pe_high_line"] = pe_df["pe_mean"] + pe_df["pe_std"]
-        pe_df["pe_low_line"] = pe_df["pe_mean"] - pe_df["pe_std"]
-        sorted_pe = pe_df["pe_ratio"].sort_values().values
-        pe_df["pe_percentile"] = pe_df["pe_ratio"].apply(
-            lambda x: np.searchsorted(sorted_pe, x, side="left") / len(sorted_pe) * 100
-        )
+        pe_df = add_valuation_stats(pe_df)
         self.cache.save_us_pe_daily(pe_df)
-        stats_cols = ["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]
+        stats_cols = ["trade_date", *STAT_COLUMNS]
         self.cache.save_us_pe_stats(pe_df[stats_cols])
 
     def run_historical(self, progress_cb=None) -> pd.DataFrame:
@@ -333,7 +330,7 @@ class USETL:
                 "constituent_basis": "current_constituents_backfill",
             })
 
-        pe_df = pd.DataFrame(results)
+        pe_df = add_valuation_stats(pd.DataFrame(results))
         self.cache.save_h30533_snapshot(
             self.index_code, snapshot, pe_df, pd.DataFrame(records)
         )

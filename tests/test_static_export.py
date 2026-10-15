@@ -134,6 +134,16 @@ def test_static_rows_are_strict_json_and_keep_validity_metadata():
     assert rows[0][8:] == [1, 0, 0.5, "non_positive_profit;pe_out_of_bounds"]
 
 
+def test_h30533_static_rows_emit_valuation_bands():
+    rows = _to_rows(pd.DataFrame([{
+        "trade_date": "2026-10-14", "pe_ratio": 12.5, "pe_mean": 10.0,
+        "pe_high_line": 12.0, "pe_low_line": 8.0, "pe_percentile": 75.0,
+        "stock_count": 1, "valid_count": 1, "weight_coverage": 1.0,
+    }]), h30533=True)
+
+    assert rows[0][2:6] == [10.0, 12.0, 8.0, 75.0]
+
+
 def test_static_export_writes_h30533_unavailable_artifacts(tmp_path, monkeypatch):
     class FakeCache:
         def load_h30533_snapshot(self, code):
