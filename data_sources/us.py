@@ -1,9 +1,10 @@
 """美股/港股/中概股数据源（基于 akshare + 新浪实时行情）"""
 import time
+import math
 import requests
 import akshare as ak
 import pandas as pd
-from typing import Optional
+from typing import Any, Optional
 from config import API_RETRY_TIMES, API_RETRY_DELAY
 
 
@@ -22,7 +23,67 @@ class USDataSource:
         self._fx_rate: Optional[float] = None
         self._fx_cached_at: float = 0
 
-    def _get_fx_rate(self) -> float:
+    @staticmethod
+    def build_input_record(
+        code: str,
+        price: Optional[float],
+        currency: Optional[str],
+        shares_or_market_cap: Optional[float],
+        profit_ttm: Optional[float],
+        financial_as_of: Optional[str],
+        source: str,
+        ads_ratio: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Build a common quote/financial record without sentinel zeros."""
+        missing = []
+        invalid = []
+        for field, value, positive in (
+            ("price", price, True),
+            ("shares_or_market_cap", shares_or_market_cap, True),
+            ("profit_ttm", profit_ttm, True),
+        ):
+            if value is None:
+                missing.append(field)
+                continue
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                invalid.append(field)
+                continue
+            if not math.isfinite(numeric_value) or (positive and numeric_value <= 0):
+                invalid.append(field)
+        if currency is None:
+            missing.append("currency")
+        if financial_as_of is None:
+            missing.append("financial_as_of")
+        ads_ratio_invalid = False
+        if ads_ratio is None:
+            missing.append("ads_ratio")
+        else:
+            try:
+                ads_ratio = float(ads_ratio)
+                ads_ratio_invalid = not math.isfinite(ads_ratio) or ads_ratio <= 0
+            except (TypeError, ValueError):
+                ads_ratio_invalid = True
+            if ads_ratio_invalid:
+                invalid.append("ads_ratio")
+        return {
+            "code": code,
+            "price": price,
+            "currency": currency,
+            "shares_or_market_cap": shares_or_market_cap,
+            "profit_ttm": profit_ttm,
+            "financial_as_of": financial_as_of,
+            "source": source,
+            "ads_ratio": ads_ratio,
+            "eps_ttm": None,
+            "validity_reason": "; ".join(
+                [*(f"missing {field}" for field in missing),
+                 *(f"invalid {field}" for field in invalid)]
+            ) or None,
+        }
+
+    def _get_fx_rate(self) -> Optional[float]:
         """获取最新 USD/CNY 中间价"""
         now = time.time()
         if self._fx_rate is not None and now - self._fx_cached_at < 86400:
@@ -39,69 +100,19 @@ class USDataSource:
                 pass
             if attempt < API_RETRY_TIMES - 1:
                 time.sleep(API_RETRY_DELAY * (attempt + 1))
-        return 7.1771
+        return None
 
     def get_constituents(self, index_code: str) -> pd.DataFrame:
-        """返回预定义的中概互联网成分股（每个公司只保留主要上市地，避免重复）
-        规则：港股(0xxxx.HK) 优先于美股ADR；同一公司只出现一次
-        """
-        # 主要上市地（港股优先，纯美股除外）
-        stocks = {
-            # --- 港股（主要上市地）---
-            "00700.HK": {"name": "腾讯控股",   "exchange": "HKSE",  "sina_code": "hk00700"},
-            "09988.HK": {"name": "阿里巴巴－Ｗ", "exchange": "HKSE",  "sina_code": "hk09988"},
-            "01810.HK": {"name": "小米集团－Ｗ", "exchange": "HKSE",  "sina_code": "hk01810"},
-            "03690.HK": {"name": "美团－Ｗ",    "exchange": "HKSE",  "sina_code": "hk03690"},
-            "09999.HK": {"name": "网易－ＳＷ",  "exchange": "HKSE",  "sina_code": "hk09999"},
-            "09618.HK": {"name": "京东集团－ＳＷ","exchange": "HKSE",  "sina_code": "hk09618"},
-            "09961.HK": {"name": "携程集团－Ｓ", "exchange": "HKSE",  "sina_code": "hk09961"},
-            "09888.HK": {"name": "百度集团－Ｗ", "exchange": "HKSE",  "sina_code": "hk09888"},
-            "02423.HK": {"name": "贝壳－Ｗ",    "exchange": "HKSE",  "sina_code": "hk02423"},
-            "01024.HK": {"name": "快手－Ｗ",    "exchange": "HKSE",  "sina_code": "hk01024"},
-            "01781.HK": {"name": "满帮集团",    "exchange": "HKSE",  "sina_code": "hk01781"},
-            "06618.HK": {"name": "京东健康",    "exchange": "HKSE",  "sina_code": "hk06618"},
-            "01698.HK": {"name": "腾讯音乐－ＳＷ","exchange": "HKSE",  "sina_code": "hk01698"},
-            "09626.HK": {"name": "哔哩哔哩－Ｗ", "exchange": "HKSE",  "sina_code": "hk09626"},
-            "03888.HK": {"name": "金山软件",    "exchange": "HKSE",  "sina_code": "hk03888"},
-            "00136.HK": {"name": "中国儒意",    "exchange": "HKSE",  "sina_code": "hk00136"},
-            "00241.HK": {"name": "阿里健康",    "exchange": "HKSE",  "sina_code": "hk00241"},
-            "00780.HK": {"name": "同程旅行",    "exchange": "HKSE",  "sina_code": "hk00780"},
-            "01797.HK": {"name": "东方甄选",    "exchange": "HKSE",  "sina_code": "hk01797"},
-            "06060.HK": {"name": "众安在线",    "exchange": "HKSE",  "sina_code": "hk06060"},
-            "01357.HK": {"name": "美图公司",    "exchange": "HKSE",  "sina_code": "hk01357"},
-            "02400.HK": {"name": "心动公司",    "exchange": "HKSE",  "sina_code": "hk02400"},
-            "00772.HK": {"name": "阅文集团",    "exchange": "HKSE",  "sina_code": "hk00772"},
-            "01833.HK": {"name": "平安好医生",  "exchange": "HKSE",  "sina_code": "hk01833"},
-            "09997.HK": {"name": "京东物流",    "exchange": "HKSE",  "sina_code": "hk09997"},
-            "00941.HK": {"name": "中国移动",    "exchange": "HKSE",  "sina_code": "hk00941"},
-            "02013.HK": {"name": "微盟集团",    "exchange": "HKSE",  "sina_code": "hk02013"},
-            "02518.HK": {"name": "汽车之家－Ｓ", "exchange": "HKSE",  "sina_code": "hk02518"},
-            # --- 纯美股（无对应港股主要上市的）---
-            "PDD":     {"name": "拼多多(ADR)",    "exchange": "NASDAQ","sina_code": "PDD"},
-            "WB":      {"name": "微博(ADR)",     "exchange": "NASDAQ","sina_code": "WB"},
-            "FUTU":    {"name": "富途控股(ADR)", "exchange": "NASDAQ","sina_code": "FUTU"},
-            "YUMC":    {"name": "百胜中国(ADR)", "exchange": "NYSE",  "sina_code": "YUMC"},
-            "GDS":     {"name": "世纪互联(ADR)", "exchange": "NASDAQ","sina_code": "GDS"},
-            "VIPS":    {"name": "唯品会(ADR)",   "exchange": "NYSE",  "sina_code": "VIPS"},
-            "LI":      {"name": "理想汽车(ADR)", "exchange": "NASDAQ","sina_code": "LI"},
-            "NIO":     {"name": "蔚来(ADR)",     "exchange": "NYSE",  "sina_code": "NIO"},
-            "XPEV":    {"name": "小鹏汽车(ADR)", "exchange": "NYSE",  "sina_code": "XPEV"},
-            "TIGR":    {"name": "老虎证券(ADR)", "exchange": "NASDAQ","sina_code": "TIGR"},
-            "SINA":    {"name": "新浪(ADR)",     "exchange": "NASDAQ","sina_code": "SINA"},
-            "SOHU":    {"name": "搜狐(ADR)",     "exchange": "NASDAQ","sina_code": "SOHU"},
-            "MOMO":    {"name": "陌陌(ADR)",     "exchange": "NASDAQ","sina_code": "MOMO"},
-            "NCTY":    {"name": "世纪华通(OTC)",  "exchange": "OTC",   "sina_code": "NCTY"},
-            "IQ":      {"name": "爱奇艺(ADR)",   "exchange": "NASDAQ","sina_code": "IQ"},
-            "FENG":    {"name": "凤凰卫视(ADR)", "exchange": "NASDAQ","sina_code": "FENG"},
-            "VNET":    {"name": "网宿科技(ADR)", "exchange": "NASDAQ","sina_code": "VNET"},
-        }
+        """返回预定义的中概互联网成分股（35只：22港股+13美股ADR，去重）"""
+        from config import CHINA_INTL_STOCKS
         records = []
-        for code, info in stocks.items():
+        for code, name in CHINA_INTL_STOCKS.items():
+            is_hk = code.endswith('.HK')
             records.append({
                 "code": code,
-                "name": info["name"],
-                "exchange": info["exchange"],
-                "sina_code": info["sina_code"],
+                "name": name,
+                "exchange": "HKSE" if is_hk else "NASDAQ",
+                "sina_code": f"hk{code.replace('.HK','')}" if is_hk else code,
             })
         return pd.DataFrame(records)
 
@@ -126,10 +137,13 @@ class USDataSource:
                     })
                     df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
                     df = df.sort_values("date").reset_index(drop=True)
-                    keep = ["date", "open", "high", "low", "close", "volume", "amount"]
+                    keep = ["date", "open", "high", "low", "close", "volume", "amount",
+                            "market_cap", "marketCap", "MARKET_CAP", "total_market_cap",
+                            "shares_outstanding", "outstanding_share", "total_shares", "shares"]
                     existing = [c for c in keep if c in df.columns]
                     df = df[existing]
-                    df["outstanding_share"] = 0.0
+                    if "outstanding_share" not in df.columns:
+                        df["outstanding_share"] = float("nan")
                     if start_date:
                         df = df[df["date"] >= start_date]
                     if end_date:
@@ -151,10 +165,13 @@ class USDataSource:
                                             "amount": "amount"})
                     df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
                     df = df.sort_values("date").reset_index(drop=True)
-                    keep = ["date", "open", "high", "low", "close", "volume", "amount"]
+                    keep = ["date", "open", "high", "low", "close", "volume", "amount",
+                            "market_cap", "marketCap", "MARKET_CAP", "total_market_cap",
+                            "shares_outstanding", "outstanding_share", "total_shares", "shares"]
                     existing = [c for c in keep if c in df.columns]
                     df = df[existing]
-                    df["outstanding_share"] = 0.0
+                    if "outstanding_share" not in df.columns:
+                        df["outstanding_share"] = float("nan")
                     if start_date:
                         df = df[df["date"] >= start_date]
                     if end_date:
@@ -194,81 +211,135 @@ class USDataSource:
                     else:
                         return pd.DataFrame()
 
-    def get_current_pe(self, stock_code: str) -> Optional[dict]:
-        """获取单只股票的当前 PE（港股直接 price/EPS_TTM，美股按实际币种换算）"""
+    def get_current_pe(self, stock_code: str) -> dict:
+        """获取当前 PE，并始终返回统一的行情/财务输入记录。"""
+        symbol = stock_code.replace(".HK", "")
+        ads_ratio = 1.0 if self._is_hk(stock_code) else (
+            float(self.ADS_RATIO[symbol]) if symbol in self.ADS_RATIO else None
+        )
+        price = None
+        currency = "HKD" if self._is_hk(stock_code) else None
+        eps_ttm = None
+        profit_ttm = None
+        financial_as_of = None
+        market_cap = None
+        verified_shares = None
+        unsupported_currency = None
         try:
             quotes = self.get_daily_quotes(stock_code)
-            if quotes.empty:
-                return None
-            price = float(quotes.iloc[-1]["close"])
-
-            fin = self.get_financials(stock_code)
-            if fin.empty:
-                return None
-
-            # 获取 EPS_TTM 和币种
-            eps_ttm = None
-            currency = "CNY"  # 默认人民币（美股中概多数用CNY报表）
-            for col in ["EPS_TTM", "BASIC_EPS"]:
-                if col in fin.columns:
-                    eps_ttm = fin[col].iloc[0]
-                    break
-            if eps_ttm is None or pd.isna(eps_ttm) or eps_ttm <= 0:
-                return None
-            # 检测实际币种
-            if "CURRENCY" in fin.columns and pd.notna(fin["CURRENCY"].iloc[0]):
-                curr_str = str(fin["CURRENCY"].iloc[0])
-                if "美元" in curr_str or "USD" in curr_str.upper():
-                    currency = "USD"
-                elif "港元" in curr_str or "HKD" in curr_str.upper():
-                    currency = "HKD"
-                elif "人民币" in curr_str or "CNY" in curr_str.upper():
-                    currency = "CNY"
-
-            if self._is_hk(stock_code):
-                eps_val = float(eps_ttm)
-                pe = price / eps_val if eps_val > 0 else None
-                return {
-                    "code": stock_code,
-                    "price": round(price, 2),
-                    "currency": "HKD",
-                    "eps_ttm": round(eps_val, 4),
-                    "pe": round(pe, 2) if pe else None,
-                }
-            else:
-                # 美股：根据实际币种决定换算方式
-                rate = self._get_fx_rate()
-                ads_ratio = self.ADS_RATIO.get(stock_code, 1)
-                if currency == "USD":
-                    # EPS 已经是 USD，直接用（不再除以汇率）
-                    eps_usd = float(eps_ttm) * ads_ratio
-                else:
-                    # EPS 为 CNY/HKD，换算为 USD
-                    eps_usd = float(eps_ttm) * ads_ratio / rate
-
-                pe = price / eps_usd if eps_usd > 0 else None
-
-                # EPS 单位修复：akshare 对部分美股中概的 BASIC_EPS 返回了偏小10倍的错误值
-                # 检测方法：CNY币种 + PE>15 → 将 EPS×10（使PE降低到合理范围）
-                # 已验证：BABA(17.45)/PDD(33.61) PE<15不受影响；JD/NTES/GDS/LI 需修正
-                if pe is not None and currency == "CNY" and pe > 15:
-                    alt_pe = price / (eps_usd * 10)
-                    if alt_pe > 0:
-                        eps_usd = eps_usd * 10
-                        pe = alt_pe
-
-                return {
-                    "code": stock_code,
-                    "price": round(price, 2),
-                    "currency": currency,
-                    "eps_ttm_cny": float(eps_ttm) if currency != "USD" else None,
-                    "ads_ratio": ads_ratio,
-                    "eps_ttm_usd": round(eps_usd, 4),
-                    "pe": round(pe, 2) if pe else None,
-                    "rate": rate,
-                }
+            if not quotes.empty and "close" in quotes.columns:
+                value = quotes.iloc[-1]["close"]
+                if pd.notna(value):
+                    price = float(value)
+                quote = quotes.iloc[-1]
+                for col in ("market_cap", "marketCap", "MARKET_CAP", "total_market_cap"):
+                    if col in quote.index and pd.notna(quote[col]):
+                        market_cap = float(quote[col])
+                        break
+                for col in ("verified_shares", "shares_outstanding", "outstanding_share",
+                            "total_shares", "shares"):
+                    if col in quote.index and pd.notna(quote[col]):
+                        verified_shares = float(quote[col])
+                        break
         except Exception:
-            return None
+            pass
+
+        try:
+            fin = self.get_financials(stock_code)
+            if not fin.empty:
+                for col in ("EPS_TTM", "BASIC_EPS"):
+                    if col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        eps_ttm = float(fin.iloc[0][col])
+                        break
+                for col in (
+                    "PROFIT_TTM", "NET_PROFIT_TTM", "TTM_NET_PROFIT",
+                    "profit_ttm", "net_profit_ttm", "ttm_net_profit",
+                ):
+                    if col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        profit_ttm = float(fin.iloc[0][col])
+                        break
+                for col in ("market_cap", "marketCap", "MARKET_CAP", "total_market_cap", "总市值"):
+                    if market_cap is None and col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        market_cap = float(fin.iloc[0][col])
+                        break
+                for col in ("verified_shares", "shares_outstanding", "outstanding_share",
+                            "total_shares", "shares", "TOTAL_SHARES", "总股本"):
+                    if verified_shares is None and col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        verified_shares = float(fin.iloc[0][col])
+                        break
+                for col in ("REPORT_DATE", "report_date", "REPORT_PERIOD", "date", "日期"):
+                    if col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        financial_as_of = str(fin.iloc[0][col])
+                        break
+                if "CURRENCY" in fin.columns and pd.notna(fin.iloc[0]["CURRENCY"]):
+                    curr_str = str(fin.iloc[0]["CURRENCY"]).strip()
+                    currency = None
+                    if "美元" in curr_str or "USD" in curr_str.upper():
+                        currency = "USD"
+                    elif "港元" in curr_str or "HKD" in curr_str.upper():
+                        currency = "HKD"
+                    elif "人民币" in curr_str or "CNY" in curr_str.upper():
+                        currency = "CNY"
+                    else:
+                        unsupported_currency = curr_str
+        except Exception:
+            pass
+
+        record = self.build_input_record(
+            stock_code, round(price, 2) if price is not None else None, currency,
+            market_cap if market_cap is not None else verified_shares, profit_ttm, financial_as_of,
+            "akshare", ads_ratio,
+        )
+        if unsupported_currency:
+            record["validity_reason"] = "; ".join(filter(None, [
+                record["validity_reason"],
+                f"unsupported currency: {unsupported_currency}",
+            ]))
+        record["eps_ttm"] = round(eps_ttm, 4) if eps_ttm is not None else None
+        record["eps"] = record["eps_ttm"]
+        record["market_cap"] = market_cap
+        record["verified_shares"] = verified_shares
+        record["market_cap_currency"] = "HKD" if self._is_hk(stock_code) else "USD"
+        record["profit_currency"] = currency
+        pe_inputs_missing = any(
+            record[field] is None
+            for field in ("price", "currency", "shares_or_market_cap", "ads_ratio")
+        )
+        if profit_ttm is not None and profit_ttm <= 0:
+            record["validity_reason"] = "; ".join(filter(None, [
+                record["validity_reason"], "non_positive profit_ttm"
+            ]))
+        if currency == "HKD" and not self._is_hk(stock_code):
+            record["validity_reason"] = "; ".join(filter(None, [
+                record["validity_reason"], "HKD/USD conversion unavailable"
+            ]))
+        if (pe_inputs_missing or profit_ttm is None or profit_ttm <= 0 or
+                eps_ttm is None or eps_ttm <= 0 or currency == "HKD"):
+            if eps_ttm is not None and eps_ttm <= 0:
+                record["validity_reason"] = "; ".join(
+                    filter(None, [record["validity_reason"], "non_positive eps_ttm"])
+                )
+            return record
+
+        if self._is_hk(stock_code):
+            pe = price / eps_ttm if price is not None else None
+            record.update({"eps_ttm": round(eps_ttm, 4), "pe": round(pe, 2) if pe else None})
+            return record
+
+        rate = self._get_fx_rate()
+        if currency != "USD" and rate is None:
+            record["validity_reason"] = "; ".join(filter(None, [
+                record["validity_reason"], "CNY/USD conversion unavailable"
+            ]))
+            return record
+        eps_usd = eps_ttm * ads_ratio if currency == "USD" else eps_ttm * ads_ratio / rate
+        pe = price / eps_usd if price is not None and eps_usd > 0 else None
+        record.update({
+            "eps_ttm_cny": eps_ttm if currency != "USD" else None,
+            "eps_ttm_usd": round(eps_usd, 4), "pe": round(pe, 2) if pe else None,
+            "rate": rate,
+        })
+        return record
 
     def get_realtime_hk(self, codes: list) -> pd.DataFrame:
         """批量获取港股实时行情（含新浪字段15/16作为参考估值）"""

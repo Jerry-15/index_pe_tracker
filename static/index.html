@@ -37,8 +37,8 @@
 </head>
 <body>
 <div class="header">
-  <h1>📊 板块指数估值追踪器</h1>
-  <p>自下而上计算 PE(TTM) · 数据来源：A股（新浪财经）/ 申万指数 / 美股（Sina行情 + 东方财富财务指标）· 汇率：中行中间价 · 仅供研究参考</p>
+  <h1>📊 板块指数估值追踪器 · 中证海外中国互联网50（H30533）</h1>
+  <p>指数估值与数据覆盖追踪 · 数据来源和有效性随快照展示 · 仅供研究参考，不构成投资建议</p>
 </div>
 
 <div class="container">
@@ -58,7 +58,7 @@
   </div>
 
   <div class="chart-box" id="chartSectionB" style="display:none;">
-    <h3>成分股 PE 快照</h3>
+    <h3>成分证券诊断</h3>
     <div id="chartStockPE" style="padding:10px;"></div>
   </div>
 
@@ -90,6 +90,13 @@ function initCharts() {
   window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
 }
 
+function clearRenderedState(message='数据不可用') {
+  document.getElementById('cards').innerHTML = `<div class="card"><div class="value">${message}</div></div>`;
+  document.getElementById('chartStockPE').innerHTML = '';
+  document.getElementById('chartSectionB').style.display = 'none';
+  Object.values(charts).forEach(chart => chart.clear());
+}
+
 function fmtDate(d) { return d.slice(0,10); }
 function fmtNum(v, n=2) { return v == null ? '--' : Number(v).toFixed(n); }
 
@@ -100,10 +107,11 @@ function renderStockTable(stockRows) {
   // 按 PE 排序
   stockRows.sort((a,b) => (a.pe??999) - (b.pe??999));
   let html = '<table style="width:100%;border-collapse:collapse;font-size:13px">';
-  html += '<tr style="background:#f5f6fa"><th>代码</th><th>名称</th><th>价格(USD)</th><th>PE(TTM)</th><th>PB</th></tr>';
+  html += '<tr style="background:#f5f6fa"><th>代码</th><th>名称</th><th>价格</th><th>PE(TTM)</th><th>有效性原因</th></tr>';
   for (const s of stockRows) {
+    const code = s.security_code || s.code || '--';
     const peCell = s.pe != null ? `<span class="${s.pe > 50 ? 'up' : s.pe < 20 ? 'down' : ''}">${fmtNum(s.pe)}</span>` : '--';
-    html += `<tr style="border-bottom:1px solid #eee"><td style="padding:6px 10px;font-weight:600">${s.code}</td><td style="padding:6px 10px">${s.name}</td><td style="padding:6px 10px">${fmtNum(s.price,2)}</td><td style="padding:6px 10px;text-align:right">${peCell}</td><td style="padding:6px 10px;text-align:right">${s.pb != null ? s.pb.toFixed(2) : '--'}</td></tr>`;
+    html += `<tr style="border-bottom:1px solid #eee"><td style="padding:6px 10px;font-weight:600">${code}</td><td style="padding:6px 10px">${s.name || '--'}</td><td style="padding:6px 10px">${fmtNum(s.price,2)}</td><td style="padding:6px 10px;text-align:right">${peCell}</td><td style="padding:6px 10px;text-align:right">${s.validity_reason || '--'}</td></tr>`;
   }
   html += '</table>';
   div.innerHTML = html;
@@ -118,7 +126,9 @@ async function runUpdate() {
   try {
     // 触发 Streamlit 后端更新（静态版通过刷新获取最新数据）
     const res = await fetch('/api/update', {method:'POST'});
+    if (!res.ok) throw new Error(`update HTTP ${res.status}`);
     const data = await res.json();
+    if (!data || typeof data.ok !== 'boolean') throw new Error('update response is invalid');
     status.textContent = data.ok ? '✅ 更新完成' : '⚠️ 请稍后重试';
     if (data.ok) loadIndexList();
   } catch(e) {
@@ -129,24 +139,47 @@ async function runUpdate() {
 }
 
 async function loadIndexList() {
-  const res = await fetch('data/index_list.json');
-  indexList = await res.json();
+  let manifest;
+  try {
+    const manifestRes = await fetch('data/manifest.json');
+    if (!manifestRes.ok) throw new Error(`manifest HTTP ${manifestRes.status}`);
+    manifest = await manifestRes.json();
+    if (!manifest || !Array.isArray(manifest.artifacts)) throw new Error('manifest is invalid');
+  } catch (_) {
+    indexList = [];
+    document.getElementById('coverage').textContent = '无法加载数据清单';
+    clearRenderedState('数据加载失败');
+    return;
+  }
+  try {
+    const res = await fetch('data/index_list.json');
+    if (!res.ok) throw new Error(`index list HTTP ${res.status}`);
+    indexList = await res.json();
+    if (!Array.isArray(indexList)) throw new Error('index list is not an array');
+  } catch (error) {
+    indexList = [];
+    document.getElementById('coverage').textContent = `无法加载指数列表${manifest ? '' : '，请稍后重试'}`;
+    clearRenderedState('数据加载失败');
+    return;
+  }
   const sel = document.getElementById('picker');
   sel.innerHTML = '';
   const gIndex = document.createElement('optgroup'); gIndex.label = '宽基指数';
   const gIndus = document.createElement('optgroup'); gIndus.label = '申万行业';
-  const gUS = document.createElement('optgroup'); gUS.label = '中概互联网';
+  const gUS = document.createElement('optgroup'); gUS.label = 'H30533';
   indexList.forEach(item => {
     const opt = document.createElement('option');
     opt.value = item.code; opt.textContent = item.name;
     if (item.type === 'index') gIndex.appendChild(opt);
     else if (item.type === 'industry') gIndus.appendChild(opt);
-    else if (item.type === 'us_stock') gUS.appendChild(opt);
+    else if (item.type === 'h30533') gUS.appendChild(opt);
   });
   sel.appendChild(gIndex); sel.appendChild(gIndus); sel.appendChild(gUS);
-  sel.value = '000300';
+  const previous = currentCode;
+  sel.value = indexList.some(item => item.code === previous) ? previous : (indexList.some(item => item.code === '000300') ? '000300' : (indexList[0]?.code || ''));
   sel.onchange = () => render(sel.value);
-  render(sel.value);
+  if (sel.value) render(sel.value);
+  else clearRenderedState('暂无数据');
 }
 
 function num(v, n=2) { return v == null ? '--' : v.toFixed(n); }
@@ -165,7 +198,9 @@ function renderCards(meta, rows) {
     <div class="card"><div class="label">低估线(μ-1σ)</div><div class="value down">${num(low)}</div></div>
     <div class="card"><div class="label">历史百分位</div><div class="value">${pct==null?'--':pct.toFixed(0)+'%'}</div>
       <div class="sub">${zone}</div></div>
-    <div class="card"><div class="label">官方参考PE</div><div class="value">${meta.pe_ref!=null?meta.pe_ref.toFixed(2):'--'}</div></div>
+     <div class="card"><div class="label">数据覆盖</div><div class="value">${meta.coverage==null?'--':(meta.coverage*100).toFixed(1)+'%'}</div><div class="sub">有效性：${meta.validity || '--'}</div></div>
+     <div class="card"><div class="label">数据日期</div><div class="value">${meta.date || '--'}</div><div class="sub">财务截至：${meta.financial_as_of || '--'}</div></div>
+     <div class="card"><div class="label">静态生成</div><div class="value" style="font-size:14px">${meta.generated_at || '--'}</div></div>
   `;
 }
 
@@ -186,10 +221,6 @@ function buildMainOption(meta, rows) {
   if (low.some(v=>v!=null)) series.push({ name:'低估线(μ-1σ)', type:'line', data:low, showSymbol:false, lineStyle:{width:1, type:'dotted', color:COLORS.low} });
 
   const markLines = [];
-  if (meta.pe_ref != null) {
-    markLines.push({ yAxis: meta.pe_ref, lineStyle:{color:COLORS.ref, type:'dashed', width:1.2},
-      label:{formatter:'官方参考 ' + meta.pe_ref.toFixed(1)} });
-  }
   if (markLines.length && series[2]) {
     series[2].markLine = { symbol:'none', data: markLines };
   }
@@ -248,20 +279,33 @@ function buildFundOption(rows) {
 async function render(code) {
   currentCode = code;
   const meta = indexList.find(i => i.code === code);
-  const isUS = meta && meta.type === 'us_stock';
+  const isUS = meta && meta.type === 'h30533';
 
-  document.getElementById('coverage').textContent = isUS ? '美股上市中国互联网公司' : (meta ? (meta.type==='index'?'宽基指数':'申万行业') : '');
+  document.getElementById('coverage').textContent = isUS ? `来源：${meta.source || meta.source_type || '--'} · 成分日期：${meta.constituent_as_of || '--'} · 财务截至：${meta.financial_as_of || '--'} · 生成时间：${meta.generated_at || '--'} · 覆盖：${meta.coverage == null ? '--' : (meta.coverage * 100).toFixed(1) + '%'}` : (meta ? (meta.type==='index'?'宽基指数':'申万行业') : '');
   document.getElementById('chartSectionB').style.display = isUS ? 'block' : 'none';
   document.getElementById('btnUpdate').style.display = isUS ? 'inline-block' : 'none';
   document.getElementById('updateStatus').textContent = '';
 
-  const res = await fetch(`data/${code}.json`);
-  const rows = await res.json();
-  if (!rows.length) return;
+  if (!meta) { clearRenderedState('数据不可用'); return; }
+  let rows;
+  try {
+    const res = await fetch(`data/${meta.data_file || code + '.json'}`);
+    if (!res.ok) throw new Error(`data HTTP ${res.status}`);
+    rows = await res.json();
+    if (!Array.isArray(rows)) throw new Error('data is not an array');
+  } catch (_) {
+    clearRenderedState('数据加载失败');
+    return;
+  }
+  if (!rows.length || meta.unavailable) {
+    document.getElementById('coverage').textContent += ` · 有效性：${meta.validity || meta.validity_reason || '当前不可用'}`;
+    clearRenderedState('数据不可用');
+    return;
+  }
 
   // 渲染个股 PE 快照
-  if (isUS && meta && meta.stock_pe) {
-    renderStockTable(meta.stock_pe);
+  if (isUS && meta && meta.stock_diagnostics) {
+    renderStockTable(meta.stock_diagnostics);
   }
 
   renderCards(meta, rows);

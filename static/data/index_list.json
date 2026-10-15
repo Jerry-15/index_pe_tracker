@@ -3,212 +3,263 @@
   "code": "000300",
   "name": "沪深300",
   "type": "index",
-  "pe_ref": 12.49
+  "pe_ref": 13.04,
+  "data_file": "000300.json"
  },
  {
   "code": "000905",
   "name": "中证500",
   "type": "index",
-  "pe_ref": 24.8
+  "pe_ref": 27.63,
+  "data_file": "000905.json"
  },
  {
   "code": "399001",
   "name": "深证成指",
   "type": "index",
-  "pe_ref": null
+  "pe_ref": null,
+  "data_file": "399001.json"
  },
  {
   "code": "801010",
   "name": "农林牧渔",
   "type": "industry",
-  "pe_ref": 32.42
+  "pe_ref": 33.7,
+  "data_file": "801010.json"
  },
  {
   "code": "801030",
   "name": "基础化工",
   "type": "industry",
-  "pe_ref": 21.15
+  "pe_ref": 23.41,
+  "data_file": "801030.json"
  },
  {
   "code": "801040",
   "name": "钢铁",
   "type": "industry",
-  "pe_ref": 19.98
+  "pe_ref": 20.76,
+  "data_file": "801040.json"
  },
  {
   "code": "801050",
   "name": "有色金属",
   "type": "industry",
-  "pe_ref": 15.77
+  "pe_ref": 18.35,
+  "data_file": "801050.json"
  },
  {
   "code": "801080",
   "name": "电子",
   "type": "industry",
-  "pe_ref": 45.14
+  "pe_ref": 54.0,
+  "data_file": "801080.json"
  },
  {
   "code": "801880",
   "name": "汽车",
   "type": "industry",
-  "pe_ref": 21.63
+  "pe_ref": 23.16,
+  "data_file": "801880.json"
  },
  {
   "code": "801110",
   "name": "家用电器",
   "type": "industry",
-  "pe_ref": 14.93
+  "pe_ref": 15.53,
+  "data_file": "801110.json"
  },
  {
   "code": "801120",
   "name": "食品饮料",
   "type": "industry",
-  "pe_ref": 19.87
+  "pe_ref": 20.17,
+  "data_file": "801120.json"
  },
  {
   "code": "801130",
   "name": "纺织服饰",
   "type": "industry",
-  "pe_ref": 19.68
+  "pe_ref": 20.31,
+  "data_file": "801130.json"
  },
  {
   "code": "801140",
   "name": "轻工制造",
   "type": "industry",
-  "pe_ref": 21.73
+  "pe_ref": 22.53,
+  "data_file": "801140.json"
  },
  {
   "code": "801150",
   "name": "医药生物",
   "type": "industry",
-  "pe_ref": 27.64
+  "pe_ref": 28.08,
+  "data_file": "801150.json"
  },
  {
   "code": "801160",
   "name": "公用事业",
   "type": "industry",
-  "pe_ref": 20.25
+  "pe_ref": 20.12,
+  "data_file": "801160.json"
  },
  {
   "code": "801170",
   "name": "交通运输",
   "type": "industry",
-  "pe_ref": 14.78
+  "pe_ref": 14.44,
+  "data_file": "801170.json"
  },
  {
   "code": "801180",
   "name": "房地产",
   "type": "industry",
-  "pe_ref": 8.62
+  "pe_ref": 8.44,
+  "data_file": "801180.json"
  },
  {
   "code": "801200",
   "name": "商贸零售",
   "type": "industry",
-  "pe_ref": 21.11
+  "pe_ref": 21.68,
+  "data_file": "801200.json"
  },
  {
   "code": "801210",
   "name": "社会服务",
   "type": "industry",
-  "pe_ref": 29.42
+  "pe_ref": 30.63,
+  "data_file": "801210.json"
  },
  {
   "code": "801780",
   "name": "银行",
   "type": "industry",
-  "pe_ref": 7.63
+  "pe_ref": 7.27,
+  "data_file": "801780.json"
  },
  {
   "code": "801790",
   "name": "非银金融",
   "type": "industry",
-  "pe_ref": 7.48
+  "pe_ref": 7.98,
+  "data_file": "801790.json"
  },
  {
   "code": "801230",
   "name": "综合",
   "type": "industry",
-  "pe_ref": 65.3
+  "pe_ref": 69.71,
+  "data_file": "801230.json"
  },
  {
   "code": "801710",
   "name": "建筑材料",
   "type": "industry",
-  "pe_ref": 29.8
+  "pe_ref": 33.38,
+  "data_file": "801710.json"
  },
  {
   "code": "801720",
   "name": "建筑装饰",
   "type": "industry",
-  "pe_ref": 10.56
+  "pe_ref": 10.77,
+  "data_file": "801720.json"
  },
  {
   "code": "801730",
   "name": "电力设备",
   "type": "industry",
-  "pe_ref": 24.05
+  "pe_ref": 27.35,
+  "data_file": "801730.json"
  },
  {
   "code": "801890",
   "name": "机械设备",
   "type": "industry",
-  "pe_ref": 33.97
+  "pe_ref": 38.42,
+  "data_file": "801890.json"
  },
  {
   "code": "801740",
   "name": "国防军工",
   "type": "industry",
-  "pe_ref": 49.78
+  "pe_ref": 51.39,
+  "data_file": "801740.json"
  },
  {
   "code": "801750",
   "name": "计算机",
   "type": "industry",
-  "pe_ref": 39.09
+  "pe_ref": 43.11,
+  "data_file": "801750.json"
  },
  {
   "code": "801760",
   "name": "传媒",
   "type": "industry",
-  "pe_ref": 24.57
+  "pe_ref": 23.7,
+  "data_file": "801760.json"
  },
  {
   "code": "801770",
   "name": "通信",
   "type": "industry",
-  "pe_ref": 27.21
+  "pe_ref": 29.52,
+  "data_file": "801770.json"
  },
  {
   "code": "801950",
   "name": "煤炭",
   "type": "industry",
-  "pe_ref": 17.37
+  "pe_ref": 18.09,
+  "data_file": "801950.json"
  },
  {
   "code": "801960",
   "name": "石油石化",
   "type": "industry",
-  "pe_ref": 13.29
+  "pe_ref": 13.23,
+  "data_file": "801960.json"
  },
  {
   "code": "801970",
   "name": "环保",
   "type": "industry",
-  "pe_ref": 18.1
+  "pe_ref": 19.05,
+  "data_file": "801970.json"
  },
  {
   "code": "801980",
   "name": "美容护理",
   "type": "industry",
-  "pe_ref": 26.82
+  "pe_ref": 26.32,
+  "data_file": "801980.json"
  },
  {
-  "code": "CHINA_INTL",
-  "name": "中概互联网",
-  "type": "us_stock",
+  "code": "H30533",
+  "name": "中证海外中国互联网50（H30533）",
+  "type": "h30533",
   "pe_ref": null,
-  "stock_pe": [],
-  "last_updated": "2026-10-14"
+  "data_file": "CHINA_INTL.json",
+  "last_updated": null,
+  "generated_at": "2026-10-15T01:32:40.586404+00:00",
+  "source": null,
+  "date": null,
+  "constituent_as_of": null,
+  "constituent_basis": null,
+  "financial_as_of": null,
+  "coverage": null,
+  "counts": {
+   "constituents": 0,
+   "valid": 0,
+   "negative_profit": 0,
+   "missing": 0,
+   "invalid": 0
+  },
+  "validity": "snapshot unavailable",
+  "stock_diagnostics": [],
+  "unavailable": true
  }
 ]
