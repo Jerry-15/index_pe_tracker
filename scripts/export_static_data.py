@@ -8,6 +8,7 @@
 """
 import json
 import math
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,6 +61,7 @@ def export_all():
             "code": code, "name": name, "type": "index",
             "pe_ref": _get_reference_pe(source, name),
         }
+        _add_quality_catalog_metadata(entry, pe_df.iloc[-1], generated_at)
         index_list = [item for item in index_list if item.get("code") != code]
         index_list.append(entry)
 
@@ -84,6 +86,7 @@ def export_all():
             "code": code, "name": name, "type": "industry",
             "pe_ref": float(r["pe_ttm"]) if pd.notna(r["pe_ttm"]) else None,
         }
+        _add_quality_catalog_metadata(entry, pe_df.iloc[-1], generated_at)
         index_list = [item for item in index_list if item.get("code") != code]
         index_list.append(entry)
 
@@ -118,15 +121,13 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
     except Exception:
         pass
     latest_row = pe_df.iloc[-1] if not pe_df.empty else pd.Series(dtype=object)
+    provenance_row = latest_row
+    if provenance_row.empty and not constituents.empty:
+        provenance_row = constituents.iloc[0]
+    if unavailable_reason and not pe_df.empty:
+        unavailable_reason = _text(latest_row.get("validity_reason")) or unavailable_reason
     rows = _to_rows(pe_df, h30533=True, generated_at=generated_at) if not pe_df.empty else []
     code = "H30533"
-    if not rows:
-        legacy_path = OUT / "CHINA_INTL.json"
-        if legacy_path.exists():
-            with open(legacy_path, "r", encoding="utf-8") as f:
-                legacy_rows = json.load(f)
-            rows = [row + ["C", None, generated_at, None, None, "current_constituents_backfill", None]
-                    for row in legacy_rows]
     _save(code, rows)
 
     financial_as_of = _text(latest_row.get("financial_as_of"))
@@ -146,18 +147,18 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
             "code": "H30533", "name": "中证海外中国互联网50（H30533）", "type": "h30533",
             "pe_ref": None, "data_file": f"{code}.json",
             "last_updated": _text(latest_row.get("trade_date")) if not pe_df.empty else None,
-            "source_type": _text(latest_row.get("source_type")) if not pe_df.empty else None,
-            "source_date": _text(latest_row.get("source_date")) if not pe_df.empty else None,
+            "source_type": _text(provenance_row.get("source_type")),
+            "source_date": _text(provenance_row.get("source_date")) or _text(provenance_row.get("as_of")),
             "constituent_as_of": _text(latest_row.get("constituent_as_of")) if not pe_df.empty else None,
             "constituent_basis": _text(latest_row.get("constituent_basis")) if not pe_df.empty else None,
             "financial_as_of": financial_as_of,
             "coverage": _number(latest_row.get("weight_coverage")) if not pe_df.empty else None,
-            "quality_level": _text(latest_row.get("quality_level")) if not pe_df.empty else ("C" if rows else None),
-            "source_url": _text(latest_row.get("source_url")),
-            "fetched_at": _text(latest_row.get("fetched_at")),
-            "response_hash": _text(latest_row.get("response_hash")),
-            "current_constituents_backfill": bool(latest_row.get("current_constituents_backfill", False)) or not pe_df.empty and bool(rows),
-            "current_constituents_caveat": _text(latest_row.get("current_constituents_caveat")) or ("historical values use current constituents" if rows else None),
+            "quality_level": _text(latest_row.get("quality_level")) or ("C" if unavailable_reason else None),
+            "source_url": _text(provenance_row.get("source_url")),
+            "fetched_at": _text(provenance_row.get("fetched_at")),
+            "response_hash": _text(provenance_row.get("response_hash")),
+            "current_constituents_backfill": bool(provenance_row.get("current_constituents_backfill", False)),
+            "current_constituents_caveat": _text(latest_row.get("current_constituents_caveat")) if not pe_df.empty else None,
             "counts": {
                 "constituents": len(constituents),
                 "valid": _number(latest_row.get("valid_count", latest_row.get("stock_count"))) or 0,
@@ -225,7 +226,7 @@ def _to_rows(pe_df: pd.DataFrame, h30533: bool = False, generated_at=None) -> li
                          _text(r.get("generated_at")) or generated_at,
                          _number(r.get("weight_coverage")),
                          _text(r.get("financial_as_of")), _text(r.get("validity_reason")),
-                         None])
+                          True if bool(r.get("current_constituents_backfill", False)) else None])
         else:
             row.extend([_number(r.get("valid_stock_count")),
                         _number(r.get("profitable_stock_count")),
@@ -264,10 +265,50 @@ def _save_manifest(generated_at):
     artifacts = sorted(
         path.name for path in OUT.glob("*.json") if path.name != "manifest.json"
     )
+    date_ranges = {}
+    item_count = 0
+    for artifact in artifacts:
+        with open(OUT / artifact, "r", encoding="utf-8") as source:
+            payload = json.load(source)
+        if artifact == "index_list.json":
+            item_count += len(payload)
+            continue
+        item_count += len(payload)
+        dates = [row[0] for row in payload if isinstance(row, list) and row and row[0]]
+        date_ranges[artifact] = {"min": min(dates) if dates else None,
+                                 "max": max(dates) if dates else None}
     with open(OUT / "manifest.json", "w", encoding="utf-8") as f:
-        json.dump({"generated_at": generated_at, "index_list": "index_list.json",
-                   "artifacts": artifacts}, f,
+        json.dump({"schema_version": "quality-export-v1", "source_revision": _source_revision(),
+                   "generated_at": generated_at, "index_list": "index_list.json",
+                   "artifacts": artifacts, "item_count": item_count,
+                   "date_ranges": date_ranges}, f,
                   ensure_ascii=False, indent=1)
+
+
+def _source_revision():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=BASE, text=True
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _add_quality_catalog_metadata(entry, latest, generated_at):
+    reason = _text(latest.get("validity_reason"))
+    quality = _text(latest.get("quality_level"))
+    if quality is None:
+        quality = "C"
+        reason = reason or "quality metadata unavailable from pipeline/cache"
+    entry.update({
+        "quality_level": quality,
+        "source": _text(latest.get("data_source")),
+        "data_source": _text(latest.get("data_source")),
+        "generated_at": _text(latest.get("generated_at")) or generated_at,
+        "coverage": _number(latest.get("coverage_ratio")),
+        "financial_as_of": _text(latest.get("financial_as_of")),
+        "validity": reason,
+    })
 
 
 def _get_reference_pe(source, index_name: str) -> float | None:

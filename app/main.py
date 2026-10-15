@@ -244,6 +244,9 @@ def _render_china_intl(us_etl):
     pe_df = result["pe_data"]
     stock_pe = result["stock_pe"]
     latest = pe_df.iloc[-1] if pe_df is not None and not pe_df.empty else None
+    if latest is None and result["constituents"] is not None and not result["constituents"].empty:
+        latest = result["constituents"].iloc[0].copy()
+        latest["validity_reason"] = "H30533 snapshot is unavailable"
     financial_as_of = latest.get("financial_as_of") if latest is not None else None
     if financial_as_of is None and stock_pe is not None and not stock_pe.empty and "financial_as_of" in stock_pe:
         dates = stock_pe["financial_as_of"].dropna().astype(str)
@@ -255,8 +258,10 @@ def _render_china_intl(us_etl):
         st.warning(f"H30533 当前估值不可用：{validity_reason or '缺少有效估值'}")
     st.caption(f"财务截至：{financial_as_of or '--'}")
 
-    if pe_df is not None and not pe_df.empty:
+    if latest is not None:
         render_quality_panel(latest, h30533=True)
+
+    if pe_df is not None and not pe_df.empty:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("当前 PE(TTM)", f"{latest['pe_ratio']:.2f}" if pd.notna(latest.get('pe_ratio')) else "--")
         if "pe_mean" in pe_df.columns and pd.notna(latest.get("pe_mean")):
@@ -272,31 +277,9 @@ def _render_china_intl(us_etl):
 
         with tab1:
             if not pe_df.empty and "pe_ratio" in pe_df.columns:
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=pe_df["trade_date"], y=pe_df["pe_ratio"],
-                    name="指数PE(TTM)", line=dict(color=CHART_COLORS["pe"], width=2),
-                ))
-                if "pe_mean" in pe_df.columns and pe_df["pe_mean"].notna().any():
-                    fig.add_trace(go.Scatter(
-                        x=pe_df["trade_date"], y=pe_df["pe_mean"],
-                        name="滚动均值", line=dict(color=CHART_COLORS["mean"], width=1.5, dash="dash"),
-                    ))
-                    fig.add_trace(go.Scatter(
-                        x=pe_df["trade_date"], y=pe_df["pe_high_line"],
-                        name="高估线(均值+1σ)", line=dict(color=CHART_COLORS["high_line"], width=1.5, dash="dot"),
-                    ))
-                    fig.add_trace(go.Scatter(
-                        x=pe_df["trade_date"], y=pe_df["pe_low_line"],
-                        name="低估线(均值-1σ)", line=dict(color=CHART_COLORS["low_line"], width=1.5, dash="dot"),
-                    ))
-                fig.update_layout(
-                    title=f"<b>H30533</b> — PE(TTM) 近8年走势",
-                    xaxis_title="日期", yaxis_title="市盈率 (PE)",
-                    height=450, hovermode="x unified",
-                    template="plotly_white",
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                fig = build_pe_chart(pe_df, "H30533")
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
 
         with tab2:
             if stock_pe is not None and not stock_pe.empty:

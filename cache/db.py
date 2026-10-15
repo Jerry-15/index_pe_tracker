@@ -351,6 +351,19 @@ class CacheDB:
         for frame in frames:
             if "validity_reason" not in frame:
                 frame["validity_reason"] = None
+        # The source response is one snapshot-level fact. Preserve it on every
+        # frame so downstream exports do not have to infer provenance.
+        provenance = ("source_type", "source_url", "fetched_at", "response_hash",
+                      "current_constituents_backfill", "current_constituents_caveat")
+        for column in provenance:
+            if column not in constituents:
+                continue
+            value = constituents[column].dropna().iloc[0] if constituents[column].notna().any() else None
+            for frame in (daily, securities):
+                if column not in frame:
+                    frame[column] = value
+                else:
+                    frame[column] = frame[column].where(frame[column].notna(), value)
         constituents["snapshot_date"] = constituents["as_of"]
         constituents["constituent_as_of"] = constituents["as_of"]
         securities["snapshot_date"] = securities["source_date"]

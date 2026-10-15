@@ -163,7 +163,68 @@ class StaticExportTests(unittest.TestCase):
 
         self.assertIsNone(rows[0][1])
         self.assertEqual(rows[0][-7:], ["C", "csi_official", "2026-10-15T00:00:00+00:00",
-                                        0.94, "2026-09-30", "insufficient coverage", None])
+                                         0.94, "2026-09-30", "insufficient coverage", None])
+
+    def test_regular_rows_and_catalog_use_the_quality_contract(self):
+        rows = export_static_data._to_rows(pd.DataFrame([{
+            "trade_date": "2026-10-14", "pe_ratio": 12.5,
+            "quality_level": "B", "data_source": "sina",
+            "generated_at": "2026-10-15T00:00:00+00:00", "coverage_ratio": 0.98,
+            "financial_as_of": "2026-09-30", "validity_reason": None,
+        }]), generated_at="2026-10-15T00:00:00+00:00")
+
+        self.assertEqual(rows[0][12:], ["B", "sina", "2026-10-15T00:00:00+00:00",
+                                       0.98, "2026-09-30", None])
+
+    def test_regular_catalog_marks_missing_pipeline_quality_as_c(self):
+        entry = {}
+        export_static_data._add_quality_catalog_metadata(
+            entry, pd.Series({"validity_reason": None}), "2026-10-15T00:00:00+00:00"
+        )
+        self.assertEqual(entry["quality_level"], "C")
+        self.assertEqual(entry["validity"], "quality metadata unavailable from pipeline/cache")
+
+    def test_manifest_contains_revision_counts_and_date_ranges(self):
+        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)), \
+             patch.object(export_static_data, "_source_revision", return_value="a04aa73"):
+            out = Path(self._tmpdir.name)
+            (out / "000300.json").write_text(json.dumps([
+                ["2026-01-01", 10], ["2026-10-14", 12]
+            ]), encoding="utf-8")
+            (out / "index_list.json").write_text("[]", encoding="utf-8")
+            export_static_data._save_manifest("2026-10-15T00:00:00+00:00")
+
+        manifest = json.loads((Path(self._tmpdir.name) / "manifest.json").read_text())
+        self.assertEqual(manifest["schema_version"], "quality-export-v1")
+        self.assertEqual(manifest["source_revision"], "a04aa73")
+        self.assertEqual(manifest["item_count"], 2)
+        self.assertEqual(manifest["date_ranges"]["000300.json"],
+                         {"min": "2026-01-01", "max": "2026-10-14"})
+
+    def test_source_revision_returns_full_head(self):
+        with patch.object(export_static_data.subprocess, "check_output", return_value="abcdef123456\n") as run:
+            self.assertEqual(export_static_data._source_revision(), "abcdef123456")
+            self.assertEqual(run.call_args.args[0], ["git", "rev-parse", "HEAD"])
+
+    def test_empty_h30533_export_is_empty_and_has_no_legacy_provenance(self):
+        class EmptyCache:
+            def load_h30533_snapshot(self, code):
+                return {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
+
+        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)):
+            out = Path(self._tmpdir.name)
+            (out / "index_list.json").write_text("[]", encoding="utf-8")
+            (out / "H30533.json").write_text(json.dumps([["legacy", 9.9]]), encoding="utf-8")
+            export_static_data._export_china_intl(EmptyCache(), object(), generated_at="now")
+
+        self.assertEqual(json.loads((Path(self._tmpdir.name) / "H30533.json").read_text()), [])
+        entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
+        self.assertEqual(entry["quality_level"], "C")
+        self.assertEqual(entry["validity_reason"],
+                         "H30533 snapshot is unavailable; no H30533 daily valuation rows")
+        self.assertIsNone(entry["coverage"])
+        self.assertIsNone(entry["financial_as_of"])
+        self.assertFalse(entry["current_constituents_backfill"])
 
     def test_h30533_entry_exports_quality_provenance_diagnostics_and_backfill(self):
         class QualityCache:
@@ -198,6 +259,41 @@ class StaticExportTests(unittest.TestCase):
         self.assertEqual(entry["diagnostics"]["financial_stale_count"], 1)
         self.assertTrue(entry["current_constituents_backfill"])
         self.assertIsNone(json.loads((Path(self._tmpdir.name) / "H30533.json").read_text())[0][1])
+
+    def test_h30533_populated_snapshot_uses_actual_quality_reason(self):
+        class QualityCache:
+            def load_h30533_snapshot(self, code):
+                return {"daily": pd.DataFrame([{
+                    "trade_date": "2026-10-14", "pe_ratio": None,
+                    "quality_level": "C", "validity_reason": "currency_unavailable",
+                    "source_type": "csi_official", "source_url": "https://source.test",
+                }]), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
+
+        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)):
+            (Path(self._tmpdir.name) / "index_list.json").write_text("[]", encoding="utf-8")
+            export_static_data._export_china_intl(QualityCache(), object())
+
+        entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
+        self.assertEqual(entry["validity_reason"], "currency_unavailable")
+        self.assertTrue(entry["unavailable"])
+
+    def test_unavailable_h30533_export_keeps_snapshot_metadata(self):
+        class MetadataCache:
+            def load_h30533_snapshot(self, code):
+                return {"daily": pd.DataFrame(), "constituents": pd.DataFrame([{
+                    "source_type": "etf_disclosure", "source_url": "https://source.test",
+                    "fetched_at": "2026-10-15T00:00:00Z", "response_hash": "hash",
+                    "as_of": "2026-10-14",
+                }]), "securities": pd.DataFrame()}
+
+        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)):
+            (Path(self._tmpdir.name) / "index_list.json").write_text("[]", encoding="utf-8")
+            export_static_data._export_china_intl(MetadataCache(), object())
+
+        entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
+        self.assertEqual(entry["source_type"], "etf_disclosure")
+        self.assertEqual(entry["source_url"], "https://source.test")
+        self.assertEqual(entry["response_hash"], "hash")
 
     def setUp(self):
         import tempfile

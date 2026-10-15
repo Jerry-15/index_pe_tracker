@@ -198,13 +198,12 @@ function renderQuality(meta, row) {
   const panel = document.getElementById('qualityPanel');
   if (!meta) { panel.style.display = 'none'; return; }
   const h30533 = meta.type === 'h30533';
-  const h30533Offset = h30533 ? (row.length >= 26 ? 1 : 0) : 0;
-  const quality = h30533 ? row[18 + h30533Offset] : row[12];
-  const source = h30533 ? row[19 + h30533Offset] : row[13];
-  const generated = h30533 ? row[20 + h30533Offset] : row[14];
-  const coverage = h30533 ? row[21 + h30533Offset] : row[15];
-  const financial = h30533 ? row[22 + h30533Offset] : row[16];
-  const reason = h30533 ? row[23 + h30533Offset] : row[17];
+   const quality = h30533 ? (row ? row[19] : meta.quality_level) : row[12];
+   const source = h30533 ? (row ? row[20] : meta.source_type) : row[13];
+   const generated = h30533 ? (row ? row[21] : meta.generated_at) : row[14];
+   const coverage = h30533 ? (row ? row[22] : meta.coverage) : row[15];
+   const financial = h30533 ? (row ? row[23] : meta.financial_as_of) : row[16];
+   const reason = h30533 ? (row ? row[24] : meta.validity_reason) : row[17];
   const diagnostics = h30533 && meta.diagnostics ? Object.entries(meta.diagnostics)
     .filter(([, value]) => value != null && value !== 0)
     .map(([key, value]) => `${key}: ${value}`).join(' · ') : '';
@@ -334,6 +333,7 @@ async function render(code) {
   try { rows = await fetchJSON(url); }
   catch (e) { showError(`无法加载 ${url}：${e.message}`); return; }
   renderValidity(meta, rows);
+  renderQuality(meta, rows.length ? rows[rows.length - 1] : null);
   if (!rows.length) return;
 
   // 渲染个股 PE 快照

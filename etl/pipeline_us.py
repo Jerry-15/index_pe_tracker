@@ -210,6 +210,14 @@ class USETL:
         constituents["validity_reason"] = constituents.get("validity_reason", pd.Series(index=constituents.index))
         constituents["constituent_as_of"] = constituents["as_of"]
         constituents["snapshot_date"] = constituents["as_of"]
+        source_meta = getattr(self.h30533_source, "source_metadata", {}) or {}
+        for key in ("source_url", "fetched_at", "response_hash"):
+            if key not in constituents:
+                constituents[key] = source_meta.get(key)
+            else:
+                constituents[key] = constituents[key].where(
+                    constituents[key].notna(), source_meta.get(key)
+                )
         total = len(constituents)
 
         if progress_cb:
@@ -260,6 +268,9 @@ class USETL:
                 "source_type": constituent.get("source_type"),
                 "source": record.get("source"), "data_source": record.get("data_source", record.get("source")),
                 "validity_reason": record.get("validity_reason") or (None if valid else "missing or invalid valuation"),
+                "quality_level": "A" if valid else "C",
+                "current_constituents_backfill": False,
+                "current_constituents_caveat": None,
             })
             if valid:
                 results.append(valuation_rows[-1])
@@ -299,6 +310,8 @@ class USETL:
                 "fetched_at": constituents.iloc[0].get("fetched_at") if total else None,
                 "response_hash": constituents.iloc[0].get("response_hash") if total else None,
                 "validity_reason": aggregate["validity_reason"] or "no valid security valuations",
+                "current_constituents_backfill": False,
+                "current_constituents_caveat": None,
             }])
             self.cache.save_h30533_snapshot(
                 self.index_code, constituents, diagnostic, pd.DataFrame(valuation_rows)
@@ -338,6 +351,8 @@ class USETL:
             "fetched_at": constituents.iloc[0].get("fetched_at"),
             "response_hash": constituents.iloc[0].get("response_hash"),
             "validity_reason": aggregate["validity_reason"],
+            "current_constituents_backfill": False,
+            "current_constituents_caveat": None,
         }
         pe_df = pd.DataFrame([row])
 

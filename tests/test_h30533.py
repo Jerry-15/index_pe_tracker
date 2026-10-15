@@ -1021,6 +1021,80 @@ class H30533SourceTests(unittest.TestCase):
             self.assertEqual(pdd["profit_currency"], "CNY")
             self.assertEqual(pdd["normalized_profit_ttm"], 10.0)
 
+    def test_h30533_roundtrip_preserves_complete_quality_and_provenance(self):
+        fields = {
+            "quality_level": "B", "financial_stale_count": 1,
+            "derived_market_cap_count": 2, "quote_disagreement_count": 3,
+            "excluded_count": 4, "invalid_count": 5,
+            "source_url": "https://source.test/snapshot", "fetched_at": "2026-10-15T00:00:00Z",
+            "response_hash": "hash", "market_cap_method": "reported_market_cap",
+            "profit_currency": "CNY", "market_cap_currency": "USD", "fx_rate": 7.0,
+            "normalized_profit_ttm": 12.5, "current_constituents_backfill": True,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            cache = CacheDB(Path(directory) / "cache.db")
+            constituents = pd.DataFrame([{
+                "index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA",
+                "weight": 1.0, "as_of": "2026-10-15", "source_type": "csi_official",
+                "source_url": fields["source_url"], "fetched_at": fields["fetched_at"],
+                "response_hash": fields["response_hash"],
+            }])
+            daily = pd.DataFrame([{
+                "index_code": CHINA_INTL_INDEX_CODE, "trade_date": "2026-10-15",
+                "source_type": "csi_official", "source_date": "2026-10-15",
+                "constituent_as_of": "2026-10-15", **fields,
+            }])
+            securities = pd.DataFrame([{
+                "index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA",
+                "weight": 1.0, "source_type": "csi_official", "source_date": "2026-10-15",
+                **fields,
+            }])
+            cache.save_h30533_snapshot(CHINA_INTL_INDEX_CODE, constituents, daily, securities)
+            loaded = cache.load_h30533_snapshot(CHINA_INTL_INDEX_CODE)
+
+        expected_fields = {
+            "daily": {key: value for key, value in fields.items()
+                       if key not in {"market_cap_method", "profit_currency", "market_cap_currency",
+                                      "fx_rate", "normalized_profit_ttm"}},
+            "securities": {key: value for key, value in fields.items()
+                           if key in {"quality_level", "market_cap_method", "profit_currency",
+                                      "market_cap_currency", "fx_rate", "normalized_profit_ttm",
+                                      "source_url", "fetched_at", "response_hash",
+                                      "current_constituents_backfill"}},
+        }
+        for frame_name in ("daily", "securities"):
+            row = loaded[frame_name].iloc[0]
+            for key, expected in expected_fields[frame_name].items():
+                self.assertEqual(row[key], expected, (frame_name, key))
+
+    def test_h30533_snapshot_provenance_is_propagated_to_all_frames(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = CacheDB(Path(directory) / "cache.db")
+            constituents = pd.DataFrame([{
+                "index_code": "H30533",
+                "security_code": "BABA", "weight": 1.0, "as_of": "2026-10-15",
+                "source_type": "csi_official", "source_url": "https://source.test",
+                "fetched_at": "2026-10-15T00:00:00Z", "response_hash": "hash",
+            }])
+            daily = pd.DataFrame([{
+                "index_code": "H30533",
+                "trade_date": "2026-10-15", "source_type": "csi_official",
+                "source_date": "2026-10-15", "constituent_as_of": "2026-10-15",
+            }])
+            securities = pd.DataFrame([{
+                "index_code": "H30533",
+                "security_code": "BABA", "weight": 1.0, "source_type": "csi_official",
+                "source_date": "2026-10-15",
+            }])
+            cache.save_h30533_snapshot("H30533", constituents, daily, securities)
+            loaded = cache.load_h30533_snapshot("H30533")
+
+        for frame_name in ("constituents", "daily", "securities"):
+            row = loaded[frame_name].iloc[0]
+            self.assertEqual(row["source_url"], "https://source.test")
+            self.assertEqual(row["fetched_at"], "2026-10-15T00:00:00Z")
+            self.assertEqual(row["response_hash"], "hash")
+
 
 if __name__ == "__main__":
     unittest.main()
