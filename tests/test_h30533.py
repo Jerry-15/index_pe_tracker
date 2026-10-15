@@ -13,6 +13,7 @@ import requests
 from data_sources.h30533 import H30533Source, H30533SourceError
 from data_sources.sina import SinaDataSource
 from data_sources.us import USDataSource
+from data_sources.eulerpool import EulerpoolProvider
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
 from etl.pipeline_us import aggregate_h30533, USETL
 from etl.quality import (
@@ -28,6 +29,14 @@ from scripts import export_static_data
 
 
 class H30533SourceTests(unittest.TestCase):
+    def test_eulerpool_provider_normalizes_profile_and_market_cap(self):
+        provider = EulerpoolProvider(token="test")
+        provider.profile = lambda symbol: {"currency": "USD", "mcap": 1000, "shares": 25}
+        provider.market_cap = lambda symbol: {"currency": "USD"}
+        result = provider.verified_inputs("BABA")
+        self.assertEqual(result["market_cap"], 1_000_000_000)
+        self.assertEqual(result["verified_shares"], 25_000_000)
+        self.assertEqual(result["source"], "eulerpool")
     def test_snapshot_captures_raw_response_provenance(self):
         payload = {
             "data": {"indexCode": CHINA_INTL_INDEX_CODE, "asOfDate": "2026-10-13",

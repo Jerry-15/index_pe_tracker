@@ -627,7 +627,7 @@ class CacheDB:
                     time.time(),
                 ))
             conn.executemany(
-                """INSERT INTO us_pe_daily
+                """INSERT OR REPLACE INTO us_pe_daily
                    (trade_date, pe_ratio, total_market_cap, stock_count, updated_at)
                    VALUES (?,?,?,?,?)""",
                 records,
@@ -656,7 +656,7 @@ class CacheDB:
                     time.time(),
                 ))
             conn.executemany(
-                """INSERT INTO us_pe_daily
+                """INSERT OR REPLACE INTO us_pe_daily
                    (trade_date, pe_ratio, total_market_cap, stock_count, updated_at)
                    VALUES (?,?,?,?,?)""",
                 records,

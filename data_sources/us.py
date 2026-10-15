@@ -7,6 +7,7 @@ import pandas as pd
 from typing import Any, Optional
 from config import API_RETRY_TIMES, API_RETRY_DELAY
 from etl.quality import is_stale, append_reason, is_valid_market_cap_method
+from data_sources.eulerpool import EulerpoolProvider
 
 
 class USDataSource:
@@ -20,9 +21,21 @@ class USDataSource:
         "SINA": 1, "SOHU": 1, "YUMC": 1, "GDS": 1, "VNET": 1,
     }
 
+    # Eulerpool accepts ISIN as the most stable identifier. These are only
+    # identifiers, never valuation inputs; missing mappings fall back to ticker.
+    EULERPOOL_ISIN = {
+        "BABA": "US01609W1027", "PDD": "US7223041028", "JD": "US47215P1066",
+        "NTES": "US64110W1027", "TAL": "US87484T1088", "TME": "US88034P1093",
+        "YMM": "US55034L1098", "ATHM": "US04590W1036", "BZ": "US05610D1019",
+        "JOYY": "US46591M1099", "QFIN": "US88557W1018", "VIPS": "US92763W1036",
+        "WB": "US9485961018", "TIGR": "US88605J1043", "FUTU": "US36118L1061",
+        "GDS": "US36165L1089", "TAL": "US87484T1088",
+    }
+
     def __init__(self):
         self._fx_rate: Optional[float] = None
         self._fx_cached_at: float = 0
+        self.eulerpool = EulerpoolProvider()
 
     @staticmethod
     def build_input_record(
@@ -300,6 +313,23 @@ class USDataSource:
         except Exception:
             pass
 
+        if not self._is_hk(stock_code) and (market_cap is None or currency is None):
+            identifiers = [self.EULERPOOL_ISIN[symbol]] if symbol in self.EULERPOOL_ISIN else []
+            identifiers.append(symbol)
+            external = self.eulerpool.verified_inputs_for(identifiers)
+            if external:
+                market_cap = market_cap or external.get("market_cap")
+                verified_shares = verified_shares or external.get("verified_shares")
+                currency = currency or external.get("market_cap_currency")
+                if external.get("source"):
+                    external_source = external["source"]
+                else:
+                    external_source = None
+            else:
+                external_source = None
+        else:
+            external_source = None
+
         if market_cap is None and verified_shares is None and profit_ttm is not None and eps_ttm is not None:
             try:
                 if eps_ttm > 0 and profit_ttm > 0 and price is not None:
@@ -321,7 +351,7 @@ class USDataSource:
         record = self.build_input_record(
             stock_code, round(price, 2) if price is not None else None, currency,
             market_cap if market_cap is not None else verified_shares, profit_ttm, financial_as_of,
-            "akshare", ads_ratio,
+            external_source or "akshare", ads_ratio,
         )
         if invalid_financial_date:
             record["validity_reason"] = append_reason(record["validity_reason"], f"invalid financial_as_of: {invalid_financial_date}")
