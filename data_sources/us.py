@@ -83,7 +83,7 @@ class USDataSource:
             ) or None,
         }
 
-    def _get_fx_rate(self) -> float:
+    def _get_fx_rate(self) -> Optional[float]:
         """获取最新 USD/CNY 中间价"""
         now = time.time()
         if self._fx_rate is not None and now - self._fx_cached_at < 86400:
@@ -100,7 +100,7 @@ class USDataSource:
                 pass
             if attempt < API_RETRY_TIMES - 1:
                 time.sleep(API_RETRY_DELAY * (attempt + 1))
-        return 7.1771
+        return None
 
     def get_constituents(self, index_code: str) -> pd.DataFrame:
         """返回预定义的中概互联网成分股（35只：22港股+13美股ADR，去重）"""
@@ -299,6 +299,8 @@ class USDataSource:
         record["eps"] = record["eps_ttm"]
         record["market_cap"] = market_cap
         record["verified_shares"] = verified_shares
+        record["market_cap_currency"] = "HKD" if self._is_hk(stock_code) else "USD"
+        record["profit_currency"] = currency
         pe_inputs_missing = any(
             record[field] is None
             for field in ("price", "currency", "shares_or_market_cap", "ads_ratio")
@@ -325,11 +327,13 @@ class USDataSource:
             return record
 
         rate = self._get_fx_rate()
+        if currency != "USD" and rate is None:
+            record["validity_reason"] = "; ".join(filter(None, [
+                record["validity_reason"], "CNY/USD conversion unavailable"
+            ]))
+            return record
         eps_usd = eps_ttm * ads_ratio if currency == "USD" else eps_ttm * ads_ratio / rate
         pe = price / eps_usd if price is not None and eps_usd > 0 else None
-        if pe is not None and currency == "CNY" and pe > 15:
-            eps_usd *= 10
-            pe = price / eps_usd
         record.update({
             "eps_ttm_cny": eps_ttm if currency != "USD" else None,
             "eps_ttm_usd": round(eps_usd, 4), "pe": round(pe, 2) if pe else None,

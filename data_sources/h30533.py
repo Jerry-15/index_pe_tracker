@@ -68,6 +68,7 @@ class H30533Source:
         self.timeout = timeout
         self.retries = retries
         self.rejected_rows: list[dict[str, Any]] = []
+        self.source_errors: list[dict[str, Any]] = []
         self.last_source_type: Optional[str] = None
 
     def _request_json(self, url: str, params: Mapping[str, Any]) -> Any:
@@ -78,6 +79,7 @@ class H30533Source:
     def get_snapshot(self) -> pd.DataFrame:
         """Return the official snapshot, falling back to ETF disclosure."""
         errors = []
+        self.source_errors = []
         for source_type, url, parser, params in (
             ("csi_official", self.official_url, self.parse_official, {"indexCode": CHINA_INTL_INDEX_CODE}),
             ("etf_disclosure", self.etf_url, self.parse_etf_disclosure, {"fundCode": CHINA_INTL_FUND_CODE}),
@@ -88,8 +90,12 @@ class H30533Source:
                     if result.empty:
                         raise H30533SourceError("source returned no valid constituent rows")
                     return self.deduplicate_issuers(result)
-                except H30533SourceError:
-                    raise
+                except H30533SourceError as exc:
+                    error = {"source_type": source_type, "code": exc.code,
+                             "message": str(exc), "details": exc.details}
+                    self.source_errors.append(error)
+                    errors.append(f"{source_type}: {exc}")
+                    break
                 except requests.RequestException as exc:
                     errors.append(f"{source_type}: {exc}")
                     if attempt < self.retries:
@@ -99,7 +105,9 @@ class H30533Source:
                     errors.append(f"{source_type}: {exc}")
                     break
         raise H30533SourceError(
-            "; ".join(errors), "all_sources_rejected", errors=errors
+            "; ".join(errors),
+            self.source_errors[0]["code"] if self.source_errors else "all_sources_rejected",
+            errors=self.source_errors or errors,
         )
 
     def parse_official(self, payload: Any) -> pd.DataFrame:

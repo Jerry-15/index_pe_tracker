@@ -9,7 +9,8 @@ from cache.db import CacheDB
 from config import API_BATCH_DELAY, CHINA_INTL_INDEX_CODE
 
 
-def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8) -> dict:
+def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8,
+                     fx_rates: Optional[dict] = None) -> dict:
     """Aggregate verified H30533 inputs using weighted earnings yield.
 
     Weights are always index snapshot weights.  Invalid inputs are omitted from
@@ -25,6 +26,8 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8) -> di
     negative_profit_count = 0
     invalid_count = 0
     valid_count = 0
+    fx_rates = fx_rates or {}
+    currency_unavailable = False
 
     for _, row in rows.iterrows():
         try:
@@ -62,6 +65,23 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8) -> di
         if market_cap <= 0:
             invalid_count += 1
             continue
+        market_currency = str(row.get("market_cap_currency") or row.get("currency") or "").upper()
+        profit_currency = str(row.get("profit_currency") or row.get("currency") or "").upper()
+        if market_currency and profit_currency and market_currency != profit_currency:
+            rate = fx_rates.get(f"{profit_currency}/{market_currency}")
+            if rate is None:
+                missing_count += 1
+                currency_unavailable = True
+                continue
+            try:
+                rate = float(rate)
+            except (TypeError, ValueError):
+                invalid_count += 1
+                continue
+            if not np.isfinite(rate) or rate <= 0:
+                invalid_count += 1
+                continue
+            profit /= rate
         if profit <= 0:
             negative_profit_count += 1
             continue
@@ -74,7 +94,9 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.8) -> di
     # surviving rows.  This deliberately leaves missing weight unallocated.
     coverage = valid_weight
     reason = None
-    if coverage < min_weight_coverage:
+    if currency_unavailable:
+        reason = "unavailable currency conversion"
+    elif coverage < min_weight_coverage:
         reason = f"insufficient weight coverage: {coverage:.6f} < {min_weight_coverage:.6f}"
     elif earnings_yield <= 0:
         reason = "aggregate earnings yield is non-positive"
@@ -146,6 +168,8 @@ class USETL:
                 "weight": constituent["weight"],
                 "price": record.get("price"),
                 "currency": record.get("currency"),
+                "market_cap_currency": record.get("market_cap_currency"),
+                "profit_currency": record.get("profit_currency", record.get("currency")),
                 "market_cap": record.get("market_cap"),
                 "verified_shares": record.get("verified_shares"),
                 "profit_ttm": record.get("profit_ttm"),
@@ -165,7 +189,7 @@ class USETL:
             return pd.DataFrame()
 
         df = pd.DataFrame(results)
-        aggregate = aggregate_h30533(df)
+        aggregate = aggregate_h30533(df, fx_rates={"CNY/USD": self.source._get_fx_rate()})
         today = pd.Timestamp.today().strftime("%Y-%m-%d")
 
         row = {
@@ -246,7 +270,14 @@ class USETL:
         records = []
         for _, constituent in snapshot.iterrows():
             record = self.source.get_current_pe(constituent["security_code"])
-            record.update({"weight": constituent["weight"], "constituent_basis": "current_constituents_backfill"})
+            record.update({
+                "security_code": constituent["security_code"],
+                "name": constituent.get("name"),
+                "weight": constituent["weight"],
+                "source_date": constituent["as_of"],
+                "source_type": constituent["source_type"],
+                "constituent_basis": "current_constituents_backfill",
+            })
             records.append(record)
         if not records:
             return pd.DataFrame()
@@ -273,9 +304,15 @@ class USETL:
                 row["price"] = float(day.iloc[-1]["close"])
                 row["market_cap"] = None
                 rows.append(row)
-            aggregate = aggregate_h30533(pd.DataFrame(rows))
+            aggregate = aggregate_h30533(
+                pd.DataFrame(rows), fx_rates={"CNY/USD": self.source._get_fx_rate()}
+            )
             results.append({
                 "trade_date": date,
+                "index_code": self.index_code,
+                "source_type": snapshot.iloc[0]["source_type"],
+                "source_date": snapshot.iloc[0]["as_of"],
+                "constituent_as_of": snapshot.iloc[0]["as_of"],
                 "total_market_cap": None,
                 "total_profit_ttm": None,
                 "pe_ratio": aggregate["pe"],
@@ -288,6 +325,11 @@ class USETL:
             })
 
         pe_df = pd.DataFrame(results)
+        self.cache.save_h30533_snapshot(
+            self.index_code, snapshot, pe_df, pd.DataFrame(records)
+        )
+        self.cache.save_us_pe_daily(pe_df)
+        self._recompute_us_stats()
         if progress_cb:
             progress_cb(f"完成历史序列：{len(pe_df)} 个交易日（current_constituents_backfill）")
         return pe_df

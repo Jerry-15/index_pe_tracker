@@ -77,7 +77,7 @@ def test_h30533_export_is_unavailable_without_snapshot_and_writes_manifest(tmp_p
     assert "CHINA_INTL.json" in manifest["artifacts"]
 
 
-def test_export_all_only_exports_h30533_snapshot(tmp_path, monkeypatch):
+def test_export_all_preserves_existing_entries_and_replaces_legacy_h30533(tmp_path, monkeypatch):
     class Cache:
         def load_h30533_snapshot(self, code):
             return {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
@@ -88,13 +88,16 @@ def test_export_all_only_exports_h30533_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(export_static_data, "OUT", tmp_path)
     monkeypatch.setattr(export_static_data, "CacheDB", Cache)
     monkeypatch.setattr(export_static_data, "get_source", lambda: (_ for _ in ()).throw(AssertionError("legacy source must not be used")))
-    monkeypatch.setattr(export_static_data, "INDEX_CONFIG", {"Legacy": {"code": "000300", "name": "Legacy"}})
+    (tmp_path / "index_list.json").write_text(json.dumps([
+        {"code": "000300", "name": "沪深300"},
+        {"code": "801010", "name": "农林牧渔"},
+        {"code": "CHINA_INTL", "name": "旧名称"},
+    ]))
 
     export_static_data.export_all()
 
     index_list = json.loads((tmp_path / "index_list.json").read_text())
-    assert [item["code"] for item in index_list] == ["H30533"]
-    assert set(p.name for p in tmp_path.glob("*.json")) == {"CHINA_INTL.json", "index_list.json", "manifest.json"}
+    assert [item["code"] for item in index_list] == ["000300", "801010", "H30533"]
 
 
 def test_h30533_metadata_has_canonical_delivery_fields(tmp_path, monkeypatch):

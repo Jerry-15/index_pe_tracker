@@ -27,13 +27,16 @@ MAX_DAYS = 2500
 def export_all():
     cache = CacheDB()
     OUT.mkdir(parents=True, exist_ok=True)
-    # The static delivery is intentionally limited to the new H30533 snapshot.
-    index_list = []
+    # Preserve broad-index and industry entries already in the delivery.
+    index_list = _read_index_list()
     _export_china_intl(cache, None, index_list)
 
     with open(OUT / "index_list.json", "w", encoding="utf-8") as f:
         json.dump(index_list, f, ensure_ascii=False, indent=1)
-    _write_manifest(["CHINA_INTL.json", "index_list.json"])
+    artifacts = ["index_list.json"]
+    artifacts.extend(item["data_file"] for item in index_list
+                     if item.get("data_file") and item["data_file"] not in artifacts)
+    _write_manifest(artifacts)
 
     print(f"导出完成: {len(index_list)} 个指数/行业 -> {OUT}")
 

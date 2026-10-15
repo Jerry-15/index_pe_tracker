@@ -300,6 +300,64 @@ class H30533SourceTests(unittest.TestCase):
         self.assertAlmostEqual(result["earnings_yield"], 0.16)
         self.assertAlmostEqual(result["pe"], 6.25)
 
+    def test_aggregate_h30533_converts_profit_into_market_cap_currency(self):
+        rows = pd.DataFrame([{
+            "weight": 1.0, "market_cap": 720.0, "market_cap_currency": "USD",
+            "profit_ttm": 720.0, "currency": "CNY",
+        }])
+
+        unavailable = aggregate_h30533(rows)
+        converted = aggregate_h30533(rows, fx_rates={"CNY/USD": 7.2})
+
+        self.assertFalse(unavailable["valid"])
+        self.assertIn("currency", unavailable["reason"])
+        self.assertAlmostEqual(converted["earnings_yield"], 1 / 7.2)
+        self.assertAlmostEqual(converted["pe"], 7.2)
+
+    def test_official_validation_error_falls_back_and_retains_structure(self):
+        calls = []
+
+        def fetcher(url, params):
+            calls.append(params)
+            if params.get("indexCode"):
+                return {"data": {"indexCode": "000300", "asOfDate": "2026-10-13", "constituents": []}}
+            return {
+                "fundCode": CHINA_INTL_FUND_CODE,
+                "as_of": "2026-10-10",
+                "holdings": [{"code": "00700", "name": "Tencent", "market": "HK", "weight_pct": 7.1}],
+            }
+
+        source = H30533Source(fetcher=fetcher, retries=0)
+        result = source.get_snapshot()
+
+        self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
+        self.assertEqual(calls, [{"indexCode": CHINA_INTL_INDEX_CODE}, {"fundCode": CHINA_INTL_FUND_CODE}])
+        self.assertEqual(source.source_errors[0]["code"], "wrong_index")
+        self.assertEqual(source.source_errors[0]["details"]["expected"], CHINA_INTL_INDEX_CODE)
+
+    def test_run_historical_persists_backfill_metadata(self):
+        etl = USETL(cache=MagicMock())
+        etl.h30533_source = MagicMock()
+        etl.source = MagicMock()
+        etl.h30533_source.get_snapshot.return_value = pd.DataFrame([{
+            "security_code": "BABA", "name": "Alibaba", "weight": 1.0,
+            "source_type": "etf_disclosure", "as_of": "2026-10-13",
+        }])
+        etl.source.get_current_pe.return_value = {
+            "code": "BABA", "price": 80.0, "market_cap": 800.0,
+            "profit_ttm": 80.0, "currency": "USD", "financial_as_of": "2026-09-30",
+        }
+        etl.source.get_daily_quotes.return_value = pd.DataFrame([{"date": "2026-10-14", "close": 80.0}])
+        etl.source._get_fx_rate.return_value = 7.2
+
+        with patch("etl.pipeline_us.API_BATCH_DELAY", 0), patch.object(etl, "_recompute_us_stats"):
+            result = etl.run_historical()
+
+        self.assertEqual(result.iloc[0]["constituent_basis"], "current_constituents_backfill")
+        etl.cache.save_h30533_snapshot.assert_called_once()
+        saved_daily = etl.cache.save_h30533_snapshot.call_args.args[2]
+        self.assertEqual(saved_daily.iloc[0]["constituent_basis"], "current_constituents_backfill")
+
     def test_pipeline_uses_h30533_source_and_verified_records(self):
         source = USETL.__module__
         with open(__import__(source, fromlist=["__file"]).__file__, encoding="utf-8") as handle:
@@ -924,6 +982,18 @@ class H30533SourceTests(unittest.TestCase):
 
         self.assertEqual(record["currency"], "HKD")
         self.assertIn("HKD/USD conversion unavailable", record["validity_reason"])
+        self.assertNotIn("pe", record)
+
+    def test_current_pe_marks_cny_profit_unavailable_when_fx_fetch_fails(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0, "market_cap": 800.0}])), \
+             patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                 "EPS_TTM": 2.0, "PROFIT_TTM": 80.0, "CURRENCY": "CNY",
+                 "REPORT_DATE": "2026-09-30",
+             }])), patch.object(source, "_get_fx_rate", return_value=None):
+            record = source.get_current_pe("BABA")
+
+        self.assertIn("CNY/USD conversion unavailable", record["validity_reason"])
         self.assertNotIn("pe", record)
 
     def test_current_pe_reports_non_positive_profit(self):

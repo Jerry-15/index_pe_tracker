@@ -198,7 +198,9 @@ def run_us_update(us_etl, progress_container):
             pass
 
     try:
-        us_etl.run_historical(progress_cb=progress_cb)
+        historical = us_etl.run_historical(progress_cb=progress_cb)
+        if historical is None or historical.empty:
+            raise RuntimeError("历史回溯未产生可持久化结果")
         progress_bar.progress(1.0)
         status_text.text("✅ H30533 更新完成！")
         time.sleep(0.5)
