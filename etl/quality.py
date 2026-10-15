@@ -5,6 +5,11 @@ import math
 
 
 QUALITY_LEVELS = ("A", "B", "C")
+MARKET_CAP_METHODS = (
+    "reported_market_cap",
+    "price_times_reported_shares",
+    "derived_profit_div_eps",
+)
 _MIN_COVERAGE = 0.95
 
 
@@ -71,9 +76,15 @@ def quality_level(
 
 
 def append_reason(existing: str | None, code: str) -> str:
-    """Append a diagnostic code once, preserving semicolon-separated order."""
-    current = [item.strip() for item in (existing or "").split(";") if item.strip()]
-    code = (code or "").strip()
-    if code and code not in current:
-        current.append(code)
-    return ";".join(current)
+    """Return canonical semicolon-separated diagnostic codes in first-seen order."""
+    codes = []
+    for item in (existing or "").split(";") + [code or ""]:
+        item = item.strip()
+        if item and item not in codes:
+            codes.append(item)
+    return ";".join(codes)
+
+
+def is_valid_market_cap_method(value: str | None) -> bool:
+    """Return whether a market-cap method is one of the supported values."""
+    return value is None or value in MARKET_CAP_METHODS

@@ -13,7 +13,13 @@ from data_sources.sina import SinaDataSource
 from data_sources.us import USDataSource
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
 from etl.pipeline_us import aggregate_h30533, USETL
-from etl.quality import append_reason, is_stale, quality_level
+from etl.quality import (
+    MARKET_CAP_METHODS,
+    append_reason,
+    is_valid_market_cap_method,
+    is_stale,
+    quality_level,
+)
 from etl.stats import add_valuation_stats
 from cache.db import CacheDB
 from scripts import export_static_data
@@ -81,6 +87,26 @@ class H30533SourceTests(unittest.TestCase):
         )
         self.assertEqual(append_reason("", "missing_price"), "missing_price")
         self.assertEqual(append_reason("missing_price", ""), "missing_price")
+
+    def test_append_reason_canonicalizes_existing_and_new_codes(self):
+        self.assertEqual(
+            append_reason(" stale_financial ; ; missing_price; stale_financial ", " missing_price "),
+            "stale_financial;missing_price",
+        )
+
+    def test_market_cap_method_validation_accepts_only_canonical_values(self):
+        self.assertEqual(MARKET_CAP_METHODS, (
+            "reported_market_cap",
+            "price_times_reported_shares",
+            "derived_profit_div_eps",
+        ))
+        for method in MARKET_CAP_METHODS + (None,):
+            with self.subTest(method=method):
+                self.assertTrue(is_valid_market_cap_method(method))
+
+        for method in ("", " reported_market_cap ", "unknown", 1):
+            with self.subTest(method=method):
+                self.assertFalse(is_valid_market_cap_method(method))
 
     def test_common_valuation_stats_support_long_and_single_point_series(self):
         long_frame = pd.DataFrame({
