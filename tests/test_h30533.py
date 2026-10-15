@@ -13,11 +13,41 @@ from data_sources.sina import SinaDataSource
 from data_sources.us import USDataSource
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
 from etl.pipeline_us import aggregate_h30533, USETL
+from etl.stats import add_valuation_stats
 from cache.db import CacheDB
 from scripts import export_static_data
 
 
 class H30533SourceTests(unittest.TestCase):
+    def test_common_valuation_stats_support_long_and_single_point_series(self):
+        long_frame = pd.DataFrame({
+            "trade_date": pd.date_range("2025-01-01", periods=500),
+            "pe_ratio": range(1, 501),
+        })
+
+        result = add_valuation_stats(long_frame)
+
+        self.assertEqual(set(("pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile")),
+                         set(result.columns) & {"pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"})
+        self.assertTrue(result[["pe_mean", "pe_high_line", "pe_low_line", "pe_percentile"]].iloc[-1].notna().all())
+        self.assertTrue(add_valuation_stats(long_frame.iloc[:1])["pe_mean"].notna().all())
+
+    def test_h30533_snapshot_round_trip_preserves_valuation_stats(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = CacheDB(Path(directory) / "h30533.db")
+            constituents = pd.DataFrame([{"security_code": "BABA", "as_of": "2026-10-13"}])
+            daily = pd.DataFrame([{
+                "trade_date": "2026-10-14", "index_code": "H30533", "pe_ratio": 12.5,
+                "pe_mean": 10.0, "pe_std": 2.0, "pe_high_line": 12.0,
+                "pe_low_line": 8.0, "pe_percentile": 75.0,
+            }])
+
+            cache.save_h30533_snapshot("H30533", constituents, daily, pd.DataFrame([{"security_code": "BABA"}]))
+            loaded = cache.load_h30533_snapshot("H30533")["daily"]
+
+            self.assertEqual(loaded.loc[0, "pe_high_line"], 12.0)
+            self.assertEqual(loaded.loc[0, "pe_low_line"], 8.0)
+            self.assertEqual(loaded.loc[0, "pe_percentile"], 75.0)
     @patch("data_sources.h30533.requests.get")
     def test_request_sends_required_headers_for_etf(self, get):
         response = MagicMock()

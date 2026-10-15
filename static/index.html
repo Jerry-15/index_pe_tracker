@@ -78,7 +78,8 @@
 </div>
 
 <script>
-const COLORS = { pe:'#1f77b4', mean:'#ff7f0e', high:'#d62728', low:'#2ca02c', ref:'#7f7f7f' };
+const COLORS = { pe:'#1f77b4', mean:'#ff7f0e', high:'#d62728', low:'#2ca02c', percentile:'#9467bd', ref:'#7f7f7f' };
+const LABELS = { pe:'指数PE(TTM)', mean:'滚动均值', high:'高估线(μ+1σ)', low:'低估线(μ-1σ)', percentile:'PE百分位' };
 let indexList = [];
 let currentCode = null;
 let charts = {};
@@ -214,11 +215,11 @@ function buildMainOption(meta, rows) {
     { name:'正常区间', type:'line', data:high, stack:'band', symbol:'none', lineStyle:{opacity:0}, tooltip:{show:false}, emphasis:{disabled:true} },
     { name:'均值±1σ', type:'line', data:low, stack:'band', symbol:'none', lineStyle:{opacity:0},
       areaStyle:{color:'rgba(128,128,128,0.14)'}, tooltip:{show:false}, emphasis:{disabled:true} },
-    { name:'指数PE(TTM)', type:'line', data:pe, showSymbol:rows.length <= 1, symbolSize:10, lineStyle:{width:2, color:COLORS.pe}, itemStyle:{color:COLORS.pe} },
+    { name:LABELS.pe, type:'line', data:pe, showSymbol:rows.length <= 1, symbolSize:10, lineStyle:{width:2, color:COLORS.pe}, itemStyle:{color:COLORS.pe} },
   ];
-  if (mean.some(v=>v!=null)) series.push({ name:'滚动均值', type:'line', data:mean, showSymbol:rows.length <= 1, symbolSize:8, lineStyle:{width:1.2, type:'dashed', color:COLORS.mean} });
-  if (high.some(v=>v!=null)) series.push({ name:'高估线(μ+1σ)', type:'line', data:high, showSymbol:rows.length <= 1, symbolSize:8, lineStyle:{width:1, type:'dotted', color:COLORS.high} });
-  if (low.some(v=>v!=null)) series.push({ name:'低估线(μ-1σ)', type:'line', data:low, showSymbol:rows.length <= 1, symbolSize:8, lineStyle:{width:1, type:'dotted', color:COLORS.low} });
+  if (mean.some(v=>v!=null)) series.push({ name:LABELS.mean, type:'line', data:mean, showSymbol:rows.length <= 1, symbolSize:8, lineStyle:{width:1.2, type:'dashed', color:COLORS.mean} });
+  if (high.some(v=>v!=null)) series.push({ name:LABELS.high, type:'line', data:high, showSymbol:rows.length <= 1, symbolSize:8, lineStyle:{width:1, type:'dotted', color:COLORS.high} });
+  if (low.some(v=>v!=null)) series.push({ name:LABELS.low, type:'line', data:low, showSymbol:rows.length <= 1, symbolSize:8, lineStyle:{width:1, type:'dotted', color:COLORS.low} });
 
   const markLines = [];
   if (markLines.length && series[2]) {
@@ -227,7 +228,7 @@ function buildMainOption(meta, rows) {
 
   return {
     tooltip:{ trigger:'axis' },
-    legend:{ data:['指数PE(TTM)','滚动均值','高估线(μ+1σ)','低估线(μ-1σ)'], top:0, textStyle:{fontSize:11} },
+    legend:{ data:[LABELS.pe,LABELS.mean,LABELS.high,LABELS.low], top:0, textStyle:{fontSize:11} },
     grid:{ left:50, right:20, top:34, bottom:60 },
     xAxis:{ type:'category', data:dates, boundaryGap:false },
     yAxis:{ type:'value', name:'PE', scale:true },
@@ -246,8 +247,8 @@ function buildPctOption(rows) {
     yAxis:{ type:'value', min:0, max:100, name:'%' },
     dataZoom:[ {type:'inside'}, {type:'slider', height:14, bottom:4, start:60, end:100} ],
     series:[{
-      type:'line', data:pct, showSymbol:rows.length <= 1, symbolSize:9, lineStyle:{width:1.6, color:COLORS.pe},
-      areaStyle:{color:'rgba(31,119,180,0.15)'},
+      name:LABELS.percentile, type:'line', data:pct, showSymbol:rows.length <= 1, symbolSize:9, lineStyle:{width:1.6, color:COLORS.percentile},
+      areaStyle:{color:'rgba(148,103,189,0.15)'},
       markLine:{ symbol:'none', data:[
         { yAxis:80, lineStyle:{color:'#d62728',type:'dashed'}, label:{formatter:'高估 80%',fontSize:10} },
         { yAxis:50, lineStyle:{color:'#bbb',type:'dashed'}, label:{formatter:'中位 50%',fontSize:10} },

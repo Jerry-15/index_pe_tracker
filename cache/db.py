@@ -163,8 +163,10 @@ class CacheDB:
                 weight_coverage REAL,
                 negative_profit_count INTEGER,
                 missing_count INTEGER,
-                invalid_count INTEGER,
-                source_type TEXT,
+                 invalid_count INTEGER,
+                 pe_mean REAL, pe_std REAL, pe_high_line REAL, pe_low_line REAL,
+                 pe_percentile REAL,
+                 source_type TEXT,
                 source_date TEXT,
                 constituent_as_of TEXT,
                 constituent_basis TEXT,
@@ -217,6 +219,8 @@ class CacheDB:
                 "source_date": "TEXT", "constituent_as_of": "TEXT",
                 "constituent_basis": "TEXT",
                 "validity_reason": "TEXT", "updated_at": "REAL",
+                "pe_mean": "REAL", "pe_std": "REAL", "pe_high_line": "REAL",
+                "pe_low_line": "REAL", "pe_percentile": "REAL",
             },
             "h30533_security_valuation": {
                 "snapshot_date": "TEXT", "index_code": "TEXT", "security_code": "TEXT",
@@ -273,6 +277,7 @@ class CacheDB:
             "weight_coverage",
             "negative_profit_count", "missing_count", "invalid_count", "source_type", "source_date",
             "constituent_as_of", "constituent_basis", "validity_reason", "updated_at",
+            "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile",
         ]
         if not set(df.columns).intersection(set(columns[2:-1])):
             raise ValueError("H30533 daily valuation has no recognized fields")
@@ -317,6 +322,7 @@ class CacheDB:
             "total_market_cap", "total_profit_ttm", "stock_count", "valid_count",
             "weight_coverage", "negative_profit_count", "missing_count", "invalid_count", "source_type",
             "source_date", "constituent_as_of", "constituent_basis", "validity_reason",
+            "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile",
             "updated_at",
         ]
         security_columns = [

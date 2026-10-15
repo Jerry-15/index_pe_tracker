@@ -18,6 +18,7 @@ import pandas as pd
 from cache.db import CacheDB
 from config import INDEX_CONFIG
 from data_sources import get_source
+from etl.stats import add_valuation_stats
 
 BASE = Path(__file__).resolve().parent.parent
 OUT = BASE / "static" / "data"
@@ -96,7 +97,7 @@ def _export_china_intl(cache: CacheDB, source, index_list=None):
         snapshot = cache.load_h30533_snapshot("H30533")
     except Exception:
         snapshot = {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
-    pe_df = snapshot["daily"]
+    pe_df = add_valuation_stats(snapshot["daily"])
     constituents = snapshot["constituents"]
     securities = snapshot["securities"]
     code = "CHINA_INTL"

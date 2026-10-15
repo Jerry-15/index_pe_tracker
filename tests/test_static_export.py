@@ -109,6 +109,29 @@ class StaticDeliveryTests(unittest.TestCase):
         )
         self.assertIn("if __name__ == \"__main__\":\n    main()", source.read_text())
 
+    def test_streamlit_and_static_chart_semantics_are_identical(self):
+        root = Path(__file__).parents[1]
+        streamlit = (root / "app/main.py").read_text()
+        html = (root / "static/index.html").read_text()
+
+        labels = ("高估线(μ+1σ)", "低估线(μ-1σ)", "高估 80%", "中位 50%", "低估 20%")
+        for label in labels:
+            self.assertIn(label, streamlit)
+            self.assertIn(label, html)
+        for stale in ("高估线(均值+1σ)", "低估线(均值-1σ)", "高估区(80%)", "低估区(20%)"):
+            self.assertNotIn(stale, streamlit)
+            self.assertNotIn(stale, html)
+
+        self.assertIn("rgba(128,128,128,0.14)", streamlit)
+        self.assertIn("rgba(128,128,128,0.14)", html)
+        self.assertIn("rgba(148,103,189,0.15)", streamlit)
+        self.assertIn("rgba(148,103,189,0.15)", html)
+        for color in ("#d62728", "#2ca02c", "#bbb"):
+            self.assertIn(color, streamlit)
+            self.assertIn(color, html)
+        self.assertIn("showSymbol:rows.length <= 1", html)
+        self.assertIn('mode="lines+markers" if len(pe_df) <= 1 else "lines"', streamlit)
+
 
 def test_static_rows_are_strict_json_and_keep_validity_metadata():
     df = pd.DataFrame([{
@@ -132,6 +155,16 @@ def test_static_rows_are_strict_json_and_keep_validity_metadata():
     assert "NaN" not in encoded
     assert rows[0][1] is None
     assert rows[0][8:] == [1, 0, 0.5, "non_positive_profit;pe_out_of_bounds"]
+
+
+def test_h30533_static_rows_emit_valuation_bands():
+    rows = _to_rows(pd.DataFrame([{
+        "trade_date": "2026-10-14", "pe_ratio": 12.5, "pe_mean": 10.0,
+        "pe_high_line": 12.0, "pe_low_line": 8.0, "pe_percentile": 75.0,
+        "stock_count": 1, "valid_count": 1, "weight_coverage": 1.0,
+    }]), h30533=True)
+
+    assert rows[0][2:6] == [10.0, 12.0, 8.0, 75.0]
 
 
 def test_static_export_writes_h30533_unavailable_artifacts(tmp_path, monkeypatch):
