@@ -128,7 +128,10 @@ def _export_china_intl(cache: CacheDB, source, index_list=None):
         "pe_ref": None, "data_file": H30533_DATA_FILE,
         "last_updated": _text(latest_row.get("trade_date")),
         "generated_at": generated_at,
-        "source": source_type,
+         "source": source_type,
+         "source_url": _text(latest_row.get("source_url")),
+         "fetched_at": _text(latest_row.get("fetched_at")),
+         "response_hash": _text(latest_row.get("response_hash")),
         "date": _text(latest_row.get("source_date")),
         "constituent_as_of": _text(latest_row.get("constituent_as_of")),
         "constituent_basis": _text(latest_row.get("constituent_basis")),
@@ -138,17 +141,22 @@ def _export_china_intl(cache: CacheDB, source, index_list=None):
                    "valid": _number(latest_row.get("valid_count", latest_row.get("stock_count"))) or 0,
                    "negative_profit": _number(latest_row.get("negative_profit_count")) or 0,
                    "missing": _number(latest_row.get("missing_count")) or 0,
-                   "invalid": _number(latest_row.get("invalid_count")) or 0},
+                    "invalid": _number(latest_row.get("invalid_count")) or 0},
         "validity": _text(latest_row.get("validity_reason")) or (None if rows else "snapshot unavailable"),
         "stock_diagnostics": _records(securities),
         "unavailable": not bool(rows) or _number(latest_row.get("pe_ratio")) is None,
     }
     entry["quality_level"] = _text(latest_row.get("quality_level"))
-    entry["data_source"] = _text(latest_row.get("data_source"))
+    entry["data_source"] = _text(latest_row.get("data_source")) or source_type
+    entry["financial_stale_count"] = _number(latest_row.get("financial_stale_count")) or 0
+    entry["derived_market_cap_count"] = _number(latest_row.get("derived_market_cap_count")) or 0
+    entry["quote_disagreement_count"] = _number(latest_row.get("quote_disagreement_count")) or 0
+    entry["excluded_count"] = _number(latest_row.get("excluded_count")) or 0
     entry["quality_level"] = entry["quality_level"] or "C"
     entry["source"] = entry["source"] or "unavailable"
     entry["data_source"] = entry["data_source"] or "unavailable"
-    entry["validity"] = entry["validity"] or "snapshot unavailable"
+    if entry["validity"] == "snapshot unavailable" and rows:
+        entry["validity"] = _text(latest_row.get("quality_level")) or "quality gate result unavailable"
     _replace_catalog_entry(index_list, entry, "H30533", "CHINA_INTL")
     if owns_index_list:
         with open(OUT / "index_list.json", "w", encoding="utf-8") as f:
