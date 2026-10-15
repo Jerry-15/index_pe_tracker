@@ -18,6 +18,25 @@ from scripts import export_static_data
 
 
 class H30533SourceTests(unittest.TestCase):
+    @patch("data_sources.h30533.requests.get")
+    def test_request_sends_required_headers_for_etf(self, get):
+        response = MagicMock()
+        response.json.return_value = {}
+        get.return_value = response
+        source = H30533Source(timeout=7)
+
+        source._request(source.ETF_URL, {"type": "jjcc"})
+
+        get.assert_called_once_with(
+            source.ETF_URL,
+            params={"type": "jjcc"},
+            timeout=7,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://fundf10.eastmoney.com/ccmx_513050.html",
+            },
+        )
+
     def test_static_export_uses_h30533_snapshot_and_exports_metadata(self):
         class FakeCache:
             def load_h30533_snapshot(self, index_code):

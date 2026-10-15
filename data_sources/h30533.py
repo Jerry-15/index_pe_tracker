@@ -137,7 +137,13 @@ class H30533Source:
         self.last_source_type: Optional[str] = None
 
     def _request(self, url: str, params: Mapping[str, Any]) -> Any:
-        response = requests.get(url, params=params, timeout=self.timeout)
+        request_kwargs = {}
+        if "fundf10.eastmoney.com/FundArchivesDatas.aspx" in url:
+            request_kwargs["headers"] = {
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://fundf10.eastmoney.com/ccmx_513050.html",
+            }
+        response = requests.get(url, params=params, timeout=self.timeout, **request_kwargs)
         response.raise_for_status()
         if "FundArchivesDatas.aspx" in url:
             response.encoding = response.apparent_encoding or response.encoding
