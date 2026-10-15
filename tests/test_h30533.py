@@ -547,6 +547,18 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]["weight"], 0.071)
         self.assertEqual(source.last_source_type, "etf_disclosure")
 
+    def test_parse_live_etf_disclosure_script_fixture(self):
+        fixture = Path(__file__).parent / "fixtures" / "fund_513050_holdings.js"
+        source = H30533Source()
+
+        result = source.parse_etf_disclosure(fixture.read_text())
+
+        self.assertEqual(result["as_of"].unique().tolist(), ["2026-09-30"])
+        self.assertEqual(result["security_code"].tolist(), ["00700.HK", "BABA"])
+        self.assertEqual(result["name"].tolist(), ["腾讯控股", "阿里巴巴"])
+        self.assertEqual(result["weight"].tolist(), [0.0825, 0.051])
+        self.assertEqual(result["source_type"].unique().tolist(), ["etf_disclosure"])
+
     def test_missing_code_and_weight_are_rejected_with_reasons(self):
         source = H30533Source()
         result = source.parse_official({

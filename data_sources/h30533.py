@@ -9,6 +9,8 @@ import os
 import re
 import time
 import math
+import json
+from html.parser import HTMLParser
 from typing import Any, Callable, Mapping, Optional
 
 import pandas as pd
@@ -31,6 +33,69 @@ class H30533SourceError(RuntimeError):
         self.details = details
 
 
+class _ETFTableParser(HTMLParser):
+    """Extract disclosure rows from Eastmoney's small HTML table."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[list[str]] = []
+        self._row: Optional[list[str]] = None
+        self._cell: Optional[list[str]] = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        if tag.lower() == "tr":
+            self._row = []
+        elif tag.lower() in {"th", "td"} and self._row is not None:
+            self._cell = []
+
+    def handle_data(self, data: str) -> None:
+        if self._cell is not None:
+            self._cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in {"th", "td"} and self._cell is not None and self._row is not None:
+            self._row.append("".join(self._cell).strip())
+            self._cell = None
+        elif tag == "tr" and self._row:
+            self.rows.append(self._row)
+            self._row = None
+
+    def parse(self, html: str) -> list[dict[str, str]]:
+        self.feed(html)
+        if len(self.rows) < 2:
+            raise H30533SourceError("etf_disclosure response has no holdings table", "malformed_rows")
+        headers = [re.sub(r"\s+", "", header) for header in self.rows[0]]
+
+        def column(*names: str) -> int:
+            for name in names:
+                if name in headers:
+                    return headers.index(name)
+            for index, header in enumerate(headers):
+                if any(header.startswith(name) for name in names):
+                    return index
+            raise H30533SourceError(
+                "etf_disclosure holdings table is missing a required column",
+                "malformed_rows",
+                expected_fields=list(names),
+            )
+
+        code_index = column("股票代码", "证券代码", "成分券代码")
+        name_index = column("股票名称", "证券名称", "成分券名称")
+        weight_index = column("占净值比例", "占基金净值比例", "权重(%)", "权重")
+        rows = []
+        for values in self.rows[1:]:
+            if max(code_index, name_index, weight_index) >= len(values):
+                continue
+            rows.append({
+                "code": values[code_index],
+                "name": values[name_index],
+                "market": "HK" if re.fullmatch(r"\d{1,5}", values[code_index]) else "US",
+                "weight_pct": values[weight_index],
+            })
+        return rows
+
+
 class H30533Source:
     """Load H30533 constituent snapshots from CSI, then ETF disclosure.
 
@@ -47,7 +112,7 @@ class H30533Source:
     )
     ETF_URL = os.getenv(
         "H30533_ETF_URL",
-        "https://www.efunds.com.cn/etrade/fund/513050/holdings",
+        "https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=513050&topline=10&year=&month=&rt=1",
     )
     REQUIRED_COLUMNS = [
         "index_code", "security_code", "name", "exchange", "weight",
@@ -62,7 +127,7 @@ class H30533Source:
         timeout: int = H30533_SOURCE_TIMEOUT,
         retries: int = H30533_SOURCE_RETRIES,
     ) -> None:
-        self.fetcher = fetcher or self._request_json
+        self.fetcher = fetcher or self._request
         self.official_url = os.getenv("H30533_OFFICIAL_URL", self.OFFICIAL_URL)
         self.etf_url = os.getenv("H30533_ETF_URL", self.ETF_URL)
         self.timeout = timeout
@@ -71,9 +136,12 @@ class H30533Source:
         self.source_errors: list[dict[str, Any]] = []
         self.last_source_type: Optional[str] = None
 
-    def _request_json(self, url: str, params: Mapping[str, Any]) -> Any:
+    def _request(self, url: str, params: Mapping[str, Any]) -> Any:
         response = requests.get(url, params=params, timeout=self.timeout)
         response.raise_for_status()
+        if "FundArchivesDatas.aspx" in url:
+            response.encoding = response.apparent_encoding or response.encoding
+            return response.text
         return response.json()
 
     def get_snapshot(self) -> pd.DataFrame:
@@ -114,7 +182,43 @@ class H30533Source:
         return self._parse(payload, "csi_official")
 
     def parse_etf_disclosure(self, payload: Any) -> pd.DataFrame:
+        if isinstance(payload, str):
+            payload = self._parse_etf_script(payload)
         return self._parse(payload, "etf_disclosure")
+
+    @staticmethod
+    def _parse_etf_script(payload: str) -> dict[str, Any]:
+        match = re.search(
+            r"(?:var\s+)?apidata\s*=\s*\{.*?content\s*:\s*(\"(?:\\.|[^\"])*\")",
+            payload,
+            flags=re.DOTALL,
+        )
+        if not match:
+            raise H30533SourceError("etf_disclosure response has no apidata content", "malformed_response")
+        try:
+            content = json.loads(match.group(1))
+        except json.JSONDecodeError as exc:
+            raise H30533SourceError("etf_disclosure content is not valid JavaScript text", "malformed_response") from exc
+
+        code = re.search(r"(?:^|[,\{])\s*(?:code|fundCode)\s*:\s*[\"']?(\d{6})", payload)
+        date = re.search(
+            r"(?:^|[,\{])\s*(?:reportDate|disclosureDate)\s*:\s*[\"']?(\d{4}[-/]\d{2}[-/]\d{2})",
+            payload,
+        )
+        if not date:
+            date = re.search(r"(?:截止日期|报告期|报告日期)\s*[:：]?\s*(\d{4}[-/]\d{2}[-/]\d{2}|\d{4}年\d{2}月\d{2}日)", content)
+        if not date:
+            raise H30533SourceError(
+                "etf_disclosure response has no report date",
+                "missing_as_of",
+            )
+        date_value = date.group(1).replace("年", "-").replace("月", "-").replace("日", "")
+        rows = _ETFTableParser().parse(content)
+        return {
+            "fundCode": code.group(1) if code else CHINA_INTL_FUND_CODE,
+            "as_of": date_value,
+            "holdings": rows,
+        }
 
     def normalize_code(self, code: Any, exchange: Any) -> str:
         value = str(code)

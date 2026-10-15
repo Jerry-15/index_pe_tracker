@@ -1,0 +1,1 @@
+var apidata={content:"<p>截止日期：2026-09-30</p><table><thead><tr><th>序号</th><th>股票代码</th><th>股票名称</th><th>占净值比例</th></tr></thead><tbody><tr><td>1</td><td>00700</td><td>腾讯控股</td><td>8.25%</td></tr><tr><td>2</td><td>BABA</td><td>阿里巴巴</td><td>5.10%</td></tr></tbody></table>"};
