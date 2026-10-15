@@ -524,9 +524,9 @@ class H30533SourceTests(unittest.TestCase):
         ])
         etl.source.get_current_pe.side_effect = [
             {"price": 80.0, "verified_shares": 10.0, "profit_ttm": 80.0,
-             "financial_as_of": "2026-10-01"},
+             "financial_as_of": "2026-10-01", "currency": "USD"},
             {"price": 50.0, "market_cap": 500.0, "profit_ttm": -5.0,
-             "financial_as_of": "2026-10-01"},
+             "financial_as_of": "2026-10-01", "currency": "USD"},
         ]
 
         with patch.object(etl, "_recompute_us_stats"):
@@ -909,6 +909,7 @@ class H30533SourceTests(unittest.TestCase):
         result = aggregate_h30533(pd.DataFrame([{
             "weight": 0.94, "market_cap": 100.0, "profit_ttm": 10.0,
             "financial_as_of": "2026-10-13", "as_of": "2026-10-13",
+            "market_cap_currency": "USD", "profit_currency": "USD",
         }]))
 
         self.assertIsNone(result["pe"])
@@ -936,6 +937,7 @@ class H30533SourceTests(unittest.TestCase):
             "weight": 1.0, "price": 10.0, "verified_shares": 10.0,
             "profit_ttm": 10.0, "financial_as_of": "2026-10-13",
             "as_of": "2026-10-13", "source_type": "csi_official",
+            "market_cap_currency": "USD", "profit_currency": "USD",
         }]))
 
         self.assertEqual(result["derived_market_cap_count"], 1)
@@ -945,9 +947,11 @@ class H30533SourceTests(unittest.TestCase):
     def test_h30533_output_can_be_recomputed_from_security_rows(self):
         rows = pd.DataFrame([
             {"weight": 0.6, "market_cap": 100.0, "profit_ttm": 10.0,
-             "financial_as_of": "2026-10-13", "as_of": "2026-10-13"},
+             "financial_as_of": "2026-10-13", "as_of": "2026-10-13",
+             "market_cap_currency": "USD", "profit_currency": "USD"},
             {"weight": 0.4, "market_cap": 50.0, "profit_ttm": 5.0,
-             "financial_as_of": "2026-10-13", "as_of": "2026-10-13"},
+             "financial_as_of": "2026-10-13", "as_of": "2026-10-13",
+             "market_cap_currency": "USD", "profit_currency": "USD"},
         ])
 
         result = aggregate_h30533(rows)
@@ -960,6 +964,59 @@ class H30533SourceTests(unittest.TestCase):
         self.assertAlmostEqual(result["pe"], 1 / recomputed_yield)
         self.assertIn("quality_level", result)
         self.assertIn("validity_reason", result)
+
+    def test_h30533_persisted_rows_keep_surviving_weight_and_cross_currency_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = CacheDB(Path(directory) / "cache.db")
+            constituents = pd.DataFrame([{
+                "index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA",
+                "weight": 0.60, "as_of": "2026-10-13", "source_type": "fixture",
+            }, {
+                "index_code": CHINA_INTL_INDEX_CODE, "security_code": "PDD",
+                "weight": 0.36, "as_of": "2026-10-13", "source_type": "fixture",
+            }, {
+                "index_code": CHINA_INTL_INDEX_CODE, "security_code": "JD",
+                "weight": 0.04, "as_of": "2026-10-13", "source_type": "fixture",
+            }])
+            securities = pd.DataFrame([
+                {"index_code": CHINA_INTL_INDEX_CODE, "security_code": "BABA",
+                 "weight": 0.60, "market_cap": 960.0, "market_cap_currency": "USD",
+                 "profit_ttm": 96.0, "profit_currency": "USD", "normalized_profit_ttm": 96.0,
+                 "fx_rate": 1.0, "financial_as_of": "2026-10-01",
+                 "source_type": "fixture", "source_date": "2026-10-13"},
+                {"index_code": CHINA_INTL_INDEX_CODE, "security_code": "PDD",
+                 "weight": 0.36, "market_cap": 500.0, "market_cap_currency": "USD",
+                 "profit_ttm": 70.0, "profit_currency": "CNY", "normalized_profit_ttm": 10.0,
+                 "fx_rate": 7.0, "financial_as_of": "2026-10-01",
+                 "source_type": "fixture", "source_date": "2026-10-13"},
+                {"index_code": CHINA_INTL_INDEX_CODE, "security_code": "JD",
+                 "weight": 0.04, "market_cap": 100.0, "profit_ttm": 10.0,
+                 "financial_as_of": "2026-10-01", "source_type": "fixture",
+                 "source_date": "2026-10-13"},
+            ])
+            daily = pd.DataFrame([{
+                "index_code": CHINA_INTL_INDEX_CODE, "trade_date": "2026-10-13",
+                "index_pe": 1 / (0.60 * 96 / 960 + 0.36 * 10 / 500),
+                "source_type": "fixture", "source_date": "2026-10-13",
+                "constituent_as_of": "2026-10-13", "weight_coverage": 0.96,
+                "quality_level": "C", "current_constituents_backfill": False,
+                "current_constituents_caveat": None,
+            }])
+
+            cache.save_h30533_snapshot(CHINA_INTL_INDEX_CODE, constituents, daily, securities)
+            loaded = cache.load_h30533_snapshot(CHINA_INTL_INDEX_CODE)
+            result = aggregate_h30533(
+                loaded["securities"], min_weight_coverage=0.0,
+                fx_rates={"CNY/USD": 7.0},
+            )
+
+            self.assertAlmostEqual(result["weight_coverage"], 0.96)
+            self.assertAlmostEqual(result["earnings_yield"], 0.60 * 96 / 960 + 0.36 * 10 / 500)
+            self.assertEqual(result["missing_count"], 1)
+            self.assertAlmostEqual(result["pe"], loaded["daily"].iloc[0]["index_pe"])
+            pdd = loaded["securities"].set_index("security_code").loc["PDD"]
+            self.assertEqual(pdd["profit_currency"], "CNY")
+            self.assertEqual(pdd["normalized_profit_ttm"], 10.0)
 
 
 if __name__ == "__main__":

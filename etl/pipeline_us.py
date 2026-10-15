@@ -36,13 +36,18 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.95,
         except (TypeError, ValueError):
             invalid_count += 1
             excluded_count += 1
+            reasons.append("invalid weight")
             continue
         if not np.isfinite(weight) or weight < 0:
             invalid_count += 1
             excluded_count += 1
+            reasons.append("invalid weight")
             continue
         reason = row.get("validity_reason")
-        if is_stale(row.get("financial_as_of"), row.get("as_of") or row.get("constituent_as_of")):
+        if reason is not None and pd.isna(reason):
+            reason = None
+        if is_stale(row.get("financial_as_of"), row.get("as_of") or
+                    row.get("constituent_as_of") or row.get("source_date")):
             financial_stale_count += 1
             excluded_count += 1
             reasons.append("financial_stale")
@@ -82,16 +87,25 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.95,
         except (TypeError, ValueError):
             invalid_count += 1
             excluded_count += 1
+            reasons.append(reason or "invalid valuation")
             continue
         if not np.isfinite(market_cap) or not np.isfinite(profit) or market_cap <= 0:
             invalid_count += 1
             excluded_count += 1
+            reasons.append(reason or "invalid valuation")
             continue
-        market_currency = str(row.get("market_cap_currency") or row.get("currency") or "").upper()
-        profit_currency = str(row.get("profit_currency") or row.get("currency") or "").upper()
-        if market_currency and profit_currency and market_currency != profit_currency:
+        market_currency_value = row.get("market_cap_currency")
+        profit_currency_value = row.get("profit_currency")
+        market_currency = "" if market_currency_value is None or pd.isna(market_currency_value) else str(market_currency_value).upper()
+        profit_currency = "" if profit_currency_value is None or pd.isna(profit_currency_value) else str(profit_currency_value).upper()
+        if not market_currency or not profit_currency:
+            missing_count += 1
+            excluded_count += 1
+            reasons.append("missing currency")
+            continue
+        if market_currency != profit_currency:
             rate = fx_rates.get(f"{profit_currency}/{market_currency}")
-            if rate is None:
+            if rate is None or not np.isfinite(float(rate)) or float(rate) <= 0:
                 missing_count += 1
                 excluded_count += 1
                 reasons.append("currency_unavailable")
@@ -223,14 +237,21 @@ class USETL:
             valuation_rows.append({
                 "index_code": self.index_code, "security_code": code, "name": name,
                 "issuer_id": constituent.get("issuer_id"), "weight": constituent.get("weight"),
-                "price": price, "currency": record.get("currency"), "market_cap": market_cap,
+                "price": price, "currency": record.get("currency"),
+                "market_cap_currency": record.get("market_cap_currency", record.get("currency")),
+                "profit_currency": record.get("profit_currency", record.get("currency")),
+                "market_cap": market_cap,
                 "verified_shares": shares, "profit_ttm": profit,
                 "as_of": constituent.get("as_of"),
                 "market_cap_method": record.get("market_cap_method") or (
                     "price_times_reported_shares" if market_cap is not None and record.get("market_cap") is None else None
                 ),
                 "quote_disagreement": record.get("quote_disagreement", False),
+                "quote_source_count": record.get("quote_source_count"),
+                "fx_rate": record.get("rate"),
+                "normalized_profit_ttm": record.get("normalized_profit_ttm"),
                 "source_url": constituent.get("source_url"),
+                "fetched_at": constituent.get("fetched_at"),
                 "response_hash": constituent.get("response_hash"),
                 "earnings_yield": (profit / market_cap) if valid else None,
                 "index_pe": pe if valid else None, "pe": pe if valid else None,
@@ -246,7 +267,7 @@ class USETL:
 
         aggregate = aggregate_h30533(
             pd.DataFrame(valuation_rows),
-            fx_rates={"CNY/USD": self.source._get_fx_rate()},
+            fx_rates={"CNY/USD": self.source._get_fx_rate(), "HKD/USD": self.source._get_fx_rate()},
         )
 
         if not results or aggregate["pe"] is None:
@@ -268,12 +289,14 @@ class USETL:
                 "derived_market_cap_count": aggregate["derived_market_cap_count"],
                 "quote_disagreement_count": aggregate["quote_disagreement_count"],
                 "excluded_count": aggregate["excluded_count"],
+                "invalid_count": aggregate["invalid_count"],
                 "quality_level": aggregate["quality_level"],
                 "source_type": constituents.iloc[0].get("source_type") if total else None,
                 "source_date": constituents.iloc[0].get("as_of") if total else None,
                 "constituent_as_of": constituents.iloc[0].get("as_of") if total else None,
                 "constituent_basis": "H30533",
                 "source_url": constituents.iloc[0].get("source_url") if total else None,
+                "fetched_at": constituents.iloc[0].get("fetched_at") if total else None,
                 "response_hash": constituents.iloc[0].get("response_hash") if total else None,
                 "validity_reason": aggregate["validity_reason"] or "no valid security valuations",
             }])
@@ -305,12 +328,14 @@ class USETL:
             "derived_market_cap_count": aggregate["derived_market_cap_count"],
             "quote_disagreement_count": aggregate["quote_disagreement_count"],
             "excluded_count": aggregate["excluded_count"],
+            "invalid_count": aggregate["invalid_count"],
             "quality_level": aggregate["quality_level"],
             "source_type": constituents.iloc[0].get("source_type"),
             "source_date": constituents.iloc[0].get("as_of"),
             "constituent_as_of": constituents.iloc[0].get("as_of"),
             "constituent_basis": "H30533",
             "source_url": constituents.iloc[0].get("source_url"),
+            "fetched_at": constituents.iloc[0].get("fetched_at"),
             "response_hash": constituents.iloc[0].get("response_hash"),
             "validity_reason": aggregate["validity_reason"],
         }
@@ -487,9 +512,12 @@ class USETL:
             pe_df["derived_market_cap_count"] = 0
             pe_df["quote_disagreement_count"] = 0
             pe_df["excluded_count"] = 0
+            pe_df["invalid_count"] = 0
             pe_df["validity_reason"] = "current_constituents_backfill"
             pe_df["current_constituents_backfill"] = True
+            pe_df["current_constituents_caveat"] = "historical values use current constituents"
             pe_df["source_url"] = source_meta.get("source_url")
+            pe_df["fetched_at"] = source_meta.get("fetched_at")
             pe_df["response_hash"] = source_meta.get("response_hash")
             window = min(500, len(pe_df))
             pe_df["pe_mean"] = pe_df["pe_ratio"].rolling(window=window, min_periods=max(60, window // 2)).mean()

@@ -142,7 +142,11 @@ class CacheDB:
                     stock_count INTEGER, valid_count INTEGER, weight_coverage REAL,
                     negative_profit_count INTEGER, missing_count INTEGER, source_type TEXT,
                     source_date TEXT, constituent_as_of TEXT, constituent_basis TEXT,
-                    validity_reason TEXT, updated_at REAL,
+                    validity_reason TEXT, quality_level TEXT, financial_stale_count INTEGER,
+                    derived_market_cap_count INTEGER, quote_disagreement_count INTEGER,
+                    excluded_count INTEGER, invalid_count INTEGER, source_url TEXT,
+                    fetched_at TEXT, response_hash TEXT, current_constituents_backfill INTEGER,
+                    current_constituents_caveat TEXT, updated_at REAL,
                     PRIMARY KEY (trade_date, index_code)
                 );
                 CREATE TABLE IF NOT EXISTS h30533_security_valuation (
@@ -151,6 +155,11 @@ class CacheDB:
                     market_cap REAL, verified_shares REAL, profit_ttm REAL, earnings_yield REAL,
                     index_pe REAL, pe REAL, financial_as_of TEXT, source_date TEXT,
                     source_type TEXT, source TEXT, data_source TEXT, validity_reason TEXT,
+                    quality_level TEXT, market_cap_method TEXT, quote_source_count INTEGER,
+                    quote_disagreement INTEGER, profit_currency TEXT, market_cap_currency TEXT,
+                    fx_rate REAL, normalized_profit_ttm REAL, source_url TEXT, fetched_at TEXT,
+                    response_hash TEXT, current_constituents_backfill INTEGER,
+                    current_constituents_caveat TEXT,
                     PRIMARY KEY (snapshot_date, index_code, security_code)
                 );
             """)
@@ -167,6 +176,8 @@ class CacheDB:
                 "as_of": "TEXT", "constituent_as_of": "TEXT", "is_duplicate_issuer": "INTEGER",
                 "raw_metadata": "TEXT",
                 "validity_reason": "TEXT",
+                "source_url": "TEXT", "fetched_at": "TEXT", "response_hash": "TEXT",
+                "current_constituents_backfill": "INTEGER", "current_constituents_caveat": "TEXT",
             },
             "h30533_daily_valuation": {
                 "trade_date": "TEXT", "index_code": "TEXT", "pe_ratio": "REAL",
@@ -175,7 +186,12 @@ class CacheDB:
                 "weight_coverage": "REAL", "negative_profit_count": "INTEGER",
                 "missing_count": "INTEGER", "source_type": "TEXT", "source_date": "TEXT",
                 "constituent_as_of": "TEXT", "constituent_basis": "TEXT",
-                "validity_reason": "TEXT", "updated_at": "REAL",
+                "validity_reason": "TEXT", "quality_level": "TEXT",
+                "financial_stale_count": "INTEGER", "derived_market_cap_count": "INTEGER",
+                "quote_disagreement_count": "INTEGER", "excluded_count": "INTEGER",
+                "invalid_count": "INTEGER", "source_url": "TEXT", "fetched_at": "TEXT",
+                "response_hash": "TEXT", "current_constituents_backfill": "INTEGER",
+                "current_constituents_caveat": "TEXT", "updated_at": "REAL",
             },
             "h30533_security_valuation": {
                 "snapshot_date": "TEXT", "index_code": "TEXT", "security_code": "TEXT",
@@ -184,7 +200,13 @@ class CacheDB:
                 "profit_ttm": "REAL", "earnings_yield": "REAL", "index_pe": "REAL",
                 "pe": "REAL", "financial_as_of": "TEXT", "source_date": "TEXT",
                 "source_type": "TEXT", "source": "TEXT", "data_source": "TEXT",
-                "validity_reason": "TEXT",
+                "validity_reason": "TEXT", "quality_level": "TEXT",
+                "market_cap_method": "TEXT", "quote_source_count": "INTEGER",
+                "quote_disagreement": "INTEGER", "profit_currency": "TEXT",
+                "market_cap_currency": "TEXT", "fx_rate": "REAL",
+                "normalized_profit_ttm": "REAL", "source_url": "TEXT", "fetched_at": "TEXT",
+                "response_hash": "TEXT", "current_constituents_backfill": "INTEGER",
+                "current_constituents_caveat": "TEXT",
             },
         }
         for table, columns in migrations.items():
@@ -208,19 +230,28 @@ class CacheDB:
                 "snapshot_date", "index_code", "security_code", "name", "exchange", "weight",
                 "issuer_id", "security_type", "ads_ratio", "source_type", "as_of",
                 "constituent_as_of", "is_duplicate_issuer", "raw_metadata", "validity_reason",
+                "source_url", "fetched_at", "response_hash", "current_constituents_backfill",
+                "current_constituents_caveat",
             },
             "h30533_daily_valuation": {
                 "trade_date", "index_code", "pe_ratio", "index_pe", "earnings_yield",
                 "total_market_cap", "total_profit_ttm", "stock_count", "valid_count",
                 "weight_coverage", "negative_profit_count", "missing_count", "source_type",
                 "source_date", "constituent_as_of", "constituent_basis", "validity_reason",
-                "updated_at",
+                "quality_level", "financial_stale_count", "derived_market_cap_count",
+                "quote_disagreement_count", "excluded_count", "invalid_count", "source_url",
+                "fetched_at", "response_hash", "current_constituents_backfill",
+                "current_constituents_caveat", "updated_at",
             },
             "h30533_security_valuation": {
                 "snapshot_date", "index_code", "security_code", "name", "issuer_id", "weight",
                 "price", "currency", "market_cap", "verified_shares", "profit_ttm",
                 "earnings_yield", "index_pe", "pe", "financial_as_of", "source_date",
-                "source_type", "source", "data_source", "validity_reason",
+                "source_type", "source", "data_source", "validity_reason", "quality_level",
+                "market_cap_method", "quote_source_count", "quote_disagreement",
+                "profit_currency", "market_cap_currency", "fx_rate", "normalized_profit_ttm",
+                "source_url", "fetched_at", "response_hash", "current_constituents_backfill",
+                "current_constituents_caveat",
             },
         }[table]
         for column in frame.columns:

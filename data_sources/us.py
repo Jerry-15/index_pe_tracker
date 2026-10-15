@@ -52,12 +52,13 @@ class USDataSource:
     ) -> dict[str, Any]:
         """Build a common quote/financial record without sentinel zeros."""
         code_key = str(code).strip().upper()
-        ads_ratio = USDataSource.ADS_RATIO.get(code_key, 1) if ads_ratio is None else ads_ratio
+        ads_ratio = USDataSource.ADS_RATIO.get(code_key) if ads_ratio is None else ads_ratio
+        missing_ads_ratio = ads_ratio is None
         try:
-            ads_ratio = float(ads_ratio)
+            ads_ratio = None if ads_ratio is None else float(ads_ratio)
         except (TypeError, ValueError) as exc:
             raise ValueError("ads_ratio must be positive and finite") from exc
-        if not math.isfinite(ads_ratio) or ads_ratio <= 0:
+        if not missing_ads_ratio and (not math.isfinite(ads_ratio) or ads_ratio <= 0):
             raise ValueError("ads_ratio must be positive and finite")
         missing = []
         for field, value in (
@@ -72,6 +73,8 @@ class USDataSource:
             if is_missing:
                 missing.append(field)
         diagnostics = [f"missing {field}" for field in missing]
+        if missing_ads_ratio:
+            diagnostics.append("missing ads_ratio")
         if currency is not None and not pd.isna(currency):
             currency_key = str(currency).strip().upper()
             if currency_key not in USDataSource.SUPPORTED_CURRENCIES:
@@ -84,7 +87,7 @@ class USDataSource:
             "profit_ttm": profit_ttm,
             "financial_as_of": financial_as_of,
             "source": source,
-            "ads_ratio": int(ads_ratio) if ads_ratio.is_integer() else ads_ratio,
+            "ads_ratio": int(ads_ratio) if ads_ratio is not None and ads_ratio.is_integer() else ads_ratio,
             "validity_reason": "; ".join(diagnostics) or None,
         }
 
@@ -245,7 +248,7 @@ class USDataSource:
 
             # 获取 EPS_TTM 和币种
             eps_ttm = None
-            currency = "CNY"  # 默认人民币（美股中概多数用CNY报表）
+            currency = None
             for col in ["EPS_TTM", "BASIC_EPS"]:
                 if col in fin.columns:
                     eps_ttm = fin[col].iloc[0]
@@ -272,6 +275,12 @@ class USDataSource:
                     currency = "HKD"
                 elif "人民币" in curr_str or "CNY" in curr_str.upper():
                     currency = "CNY"
+            if not currency:
+                return {
+                    "code": stock_code, "price": round(price, 2),
+                    "currency": None, "eps_ttm": float(eps_ttm),
+                    "validity_reason": "missing currency",
+                }
 
             if market_cap is None:
                 for col in ("market_cap", "marketCap", "MARKET_CAP", "total_market_cap"):
@@ -300,6 +309,8 @@ class USDataSource:
                 "code": stock_code,
                 "price": round(price, 2),
                 "currency": "HKD" if self._is_hk(stock_code) else currency,
+                "profit_currency": "HKD" if self._is_hk(stock_code) else currency,
+                "market_cap_currency": "HKD" if self._is_hk(stock_code) else currency,
                 "eps_ttm": round(float(eps_ttm), 4),
                 "quote_source_count": 2 if secondary_price is not None else 1,
                 "quote_disagreement": bool(secondary_price is not None and price and
@@ -327,9 +338,9 @@ class USDataSource:
             else:
                 # 美股：根据实际币种决定换算方式
                 rate = self._get_fx_rate()
-                ads_ratio = self.ADS_RATIO.get(stock_code, 1)
+                ads_ratio = self.ADS_RATIO.get(stock_code)
                 try:
-                    ads_ratio = float(ads_ratio)
+                    ads_ratio = None if ads_ratio is None else float(ads_ratio)
                 except (TypeError, ValueError):
                     return {
                         "code": stock_code,
@@ -339,7 +350,7 @@ class USDataSource:
                         "eps_ttm_usd": None,
                         "validity_reason": "invalid ads_ratio",
                     }
-                if not math.isfinite(ads_ratio) or ads_ratio <= 0:
+                if ads_ratio is None or not math.isfinite(ads_ratio) or ads_ratio <= 0:
                     return {
                         "code": stock_code,
                         "price": round(price, 2),
@@ -371,6 +382,8 @@ class USDataSource:
                     "ads_ratio": ads_ratio,
                     "eps_ttm_usd": round(eps_usd, 4),
                     "rate": rate,
+                    "normalized_profit_ttm": (float(profit_ttm) / rate
+                                               if currency != "USD" else float(profit_ttm)),
                 })
                 if not result["quote_disagreement"] and financial_fresh:
                     result["pe"] = round(pe, 2) if pe else None
