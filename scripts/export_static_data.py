@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 from cache.db import CacheDB
 from config import INDEX_CONFIG
+from data_sources import get_source
 
 BASE = Path(__file__).resolve().parent.parent
 OUT = BASE / "static" / "data"
