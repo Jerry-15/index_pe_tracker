@@ -214,11 +214,11 @@ function buildMainOption(meta, rows) {
     { name:'正常区间', type:'line', data:high, stack:'band', symbol:'none', lineStyle:{opacity:0}, tooltip:{show:false}, emphasis:{disabled:true} },
     { name:'均值±1σ', type:'line', data:low, stack:'band', symbol:'none', lineStyle:{opacity:0},
       areaStyle:{color:'rgba(128,128,128,0.14)'}, tooltip:{show:false}, emphasis:{disabled:true} },
-    { name:'指数PE(TTM)', type:'line', data:pe, showSymbol:false, lineStyle:{width:2, color:COLORS.pe}, itemStyle:{color:COLORS.pe} },
+    { name:'指数PE(TTM)', type:'line', data:pe, showSymbol:rows.length <= 1, symbolSize:10, lineStyle:{width:2, color:COLORS.pe}, itemStyle:{color:COLORS.pe} },
   ];
-  if (mean.some(v=>v!=null)) series.push({ name:'滚动均值', type:'line', data:mean, showSymbol:false, lineStyle:{width:1.2, type:'dashed', color:COLORS.mean} });
-  if (high.some(v=>v!=null)) series.push({ name:'高估线(μ+1σ)', type:'line', data:high, showSymbol:false, lineStyle:{width:1, type:'dotted', color:COLORS.high} });
-  if (low.some(v=>v!=null)) series.push({ name:'低估线(μ-1σ)', type:'line', data:low, showSymbol:false, lineStyle:{width:1, type:'dotted', color:COLORS.low} });
+  if (mean.some(v=>v!=null)) series.push({ name:'滚动均值', type:'line', data:mean, showSymbol:rows.length <= 1, symbolSize:8, lineStyle:{width:1.2, type:'dashed', color:COLORS.mean} });
+  if (high.some(v=>v!=null)) series.push({ name:'高估线(μ+1σ)', type:'line', data:high, showSymbol:rows.length <= 1, symbolSize:8, lineStyle:{width:1, type:'dotted', color:COLORS.high} });
+  if (low.some(v=>v!=null)) series.push({ name:'低估线(μ-1σ)', type:'line', data:low, showSymbol:rows.length <= 1, symbolSize:8, lineStyle:{width:1, type:'dotted', color:COLORS.low} });
 
   const markLines = [];
   if (markLines.length && series[2]) {
@@ -246,7 +246,7 @@ function buildPctOption(rows) {
     yAxis:{ type:'value', min:0, max:100, name:'%' },
     dataZoom:[ {type:'inside'}, {type:'slider', height:14, bottom:4, start:60, end:100} ],
     series:[{
-      type:'line', data:pct, showSymbol:false, lineStyle:{width:1.6, color:COLORS.pe},
+      type:'line', data:pct, showSymbol:rows.length <= 1, symbolSize:9, lineStyle:{width:1.6, color:COLORS.pe},
       areaStyle:{color:'rgba(31,119,180,0.15)'},
       markLine:{ symbol:'none', data:[
         { yAxis:80, lineStyle:{color:'#d62728',type:'dashed'}, label:{formatter:'高估 80%',fontSize:10} },
@@ -270,8 +270,8 @@ function buildFundOption(rows) {
             { type:'value', name:'利润(亿)', scale:true, splitLine:{show:false} } ],
     dataZoom:[ {type:'inside'}, {type:'slider', height:14, bottom:4, start:60, end:100} ],
     series:[
-      { name:'总市值(亿)', type:'line', data:mv, yAxisIndex:0, showSymbol:false, lineStyle:{width:1.4, color:COLORS.pe} },
-      { name:'总利润TTM(亿)', type:'line', data:profit, yAxisIndex:1, showSymbol:false, lineStyle:{width:1.4, color:COLORS.mean} },
+      { name:'总市值(亿)', type:'line', data:mv, yAxisIndex:0, showSymbol:rows.length <= 1, symbolSize:9, lineStyle:{width:1.4, color:COLORS.pe} },
+      { name:'总利润TTM(亿)', type:'line', data:profit, yAxisIndex:1, showSymbol:rows.length <= 1, symbolSize:9, lineStyle:{width:1.4, color:COLORS.mean} },
     ],
   };
 }
@@ -310,8 +310,11 @@ async function render(code) {
 
   renderCards(meta, rows);
   charts.main.setOption(buildMainOption(meta, rows), true);
-  charts.pct.setOption(buildPctOption(rows), true);
-  charts.fund.setOption(buildFundOption(rows), true);
+   charts.pct.setOption(buildPctOption(rows), true);
+   charts.fund.setOption(buildFundOption(rows), true);
+   if (rows.length <= 1) {
+     document.getElementById('coverage').textContent += ' · 当前仅有一个快照点，历史曲线将在后续更新后形成';
+   }
 }
 
 initCharts();

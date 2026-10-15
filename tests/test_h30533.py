@@ -355,7 +355,7 @@ class H30533SourceTests(unittest.TestCase):
             {
                 "type": "jjcc",
                 "code": CHINA_INTL_FUND_CODE,
-                "topline": "10",
+                "topline": "50",
                 "year": "",
                 "month": "",
                 "rt": "1",
@@ -657,6 +657,24 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result["weight"].tolist(), [0.0825, 0.051])
         self.assertEqual(result["source_type"].unique().tolist(), ["etf_disclosure"])
 
+    def test_parse_etf_disclosure_supports_rows_beyond_topline_ten(self):
+        rows = "".join(
+            f"<tr><td>{index}</td><td>{index:05d}</td><td>股票{index}</td><td>1.00%</td></tr>"
+            for index in range(1, 12)
+        )
+        fixture = (
+            'var apidata={code:513050,content:"'
+            "<p>截止至：<font>2026-06-30</font></p>"
+            "<table><thead><tr><th>序号</th><th>股票代码</th><th>股票名称</th>"
+            f"<th>占净值比例</th></tr></thead><tbody>{rows}</tbody></table>"
+            '"};'
+        )
+
+        result = H30533Source().parse_etf_disclosure(fixture)
+
+        self.assertEqual(len(result), 11)
+        self.assertEqual(result.iloc[-1]["security_code"], "00011.HK")
+
     def test_get_snapshot_uses_eastmoney_etf_request_contract(self):
         calls = []
         fixture = Path(__file__).parent / "fixtures" / "fund_513050_holdings.js"
@@ -682,7 +700,7 @@ class H30533SourceTests(unittest.TestCase):
             (source.etf_url, {
                 "type": "jjcc",
                 "code": CHINA_INTL_FUND_CODE,
-                "topline": "10",
+                "topline": "50",
                 "year": "",
                 "month": "",
                 "rt": "1",
@@ -810,7 +828,7 @@ class H30533SourceTests(unittest.TestCase):
             {
                 "type": "jjcc",
                 "code": CHINA_INTL_FUND_CODE,
-                "topline": "10",
+                "topline": "50",
                 "year": "",
                 "month": "",
                 "rt": "1",

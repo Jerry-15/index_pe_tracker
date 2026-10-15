@@ -159,7 +159,7 @@ class H30533Source:
             ("etf_disclosure", self.etf_url, self.parse_etf_disclosure, {
                 "type": "jjcc",
                 "code": CHINA_INTL_FUND_CODE,
-                "topline": "10",
+                "topline": "50",
                 "year": "",
                 "month": "",
                 "rt": "1",
