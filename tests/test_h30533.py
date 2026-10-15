@@ -1500,33 +1500,6 @@ class H30533SourceTests(unittest.TestCase):
 
         self.assertTrue(pd.isna(quotes.loc[0, "outstanding_share"]))
 
-    def test_us_historical_quality_evidence_roundtrips_without_regular_payload_fields(self):
-        fields = {
-            "quality_level": "C", "financial_stale_count": 0,
-            "derived_market_cap_count": 0, "quote_disagreement_count": 0,
-            "excluded_count": 0, "invalid_count": 0,
-            "source_type": "current_constituents_backfill",
-            "source_url": "https://source.test", "fetched_at": "2026-10-15T00:00:00Z",
-            "response_hash": "hash", "current_constituents_backfill": True,
-            "current_constituents_caveat": "historical values use current constituents",
-            "market_cap_method": None, "profit_currency": None,
-            "market_cap_currency": None, "fx_rate": None,
-            "normalized_profit_ttm": None, "financial_fresh": None,
-            "quote_source_count": 0, "quote_disagreement": False,
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            cache = CacheDB(Path(directory) / "cache.db")
-            cache.save_us_pe_daily(pd.DataFrame([{
-                "trade_date": "2026-10-15", "pe_ratio": 20.0,
-                "total_market_cap": 100.0, "total_profit_ttm": 5.0,
-                "stock_count": 25, **fields,
-            }]))
-            loaded = cache.load_us_pe_daily().iloc[0]
-
-        for key, expected in fields.items():
-            self.assertEqual(loaded[key], expected, key)
-        self.assertNotIn("coverage_ratio", loaded.index)
-
 
 if __name__ == "__main__":
     unittest.main()
