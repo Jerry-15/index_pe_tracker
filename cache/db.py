@@ -68,6 +68,12 @@ class CacheDB:
                     total_profit_ttm REAL,
                     pe_ratio REAL,
                     stock_count INTEGER,
+                    quality_level TEXT,
+                    data_source TEXT,
+                    generated_at TEXT,
+                    coverage_ratio REAL,
+                    financial_stale_count INTEGER,
+                    validity_reason TEXT,
                     updated_at REAL,
                     PRIMARY KEY (trade_date, index_code)
                 );
@@ -80,6 +86,12 @@ class CacheDB:
                     pe_high_line REAL,
                     pe_low_line REAL,
                     pe_percentile REAL,
+                    quality_level TEXT,
+                    data_source TEXT,
+                    generated_at TEXT,
+                    coverage_ratio REAL,
+                    financial_stale_count INTEGER,
+                    validity_reason TEXT,
                     updated_at REAL,
                     PRIMARY KEY (trade_date, index_code)
                 );
@@ -127,6 +139,7 @@ class CacheDB:
                     PRIMARY KEY (snapshot_date, code)
                 );
             """)
+            self._migrate_regular_pe_tables(conn)
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS h30533_constituent_snapshot (
                     snapshot_date TEXT NOT NULL, index_code TEXT NOT NULL, security_code TEXT NOT NULL,
@@ -164,6 +177,26 @@ class CacheDB:
                 );
             """)
             self._migrate_h30533_tables(conn)
+
+    @staticmethod
+    def _migrate_regular_pe_tables(conn: sqlite3.Connection):
+        migrations = {
+            "index_pe_daily": {
+                "quality_level": "TEXT", "data_source": "TEXT", "generated_at": "TEXT",
+                "coverage_ratio": "REAL", "financial_stale_count": "INTEGER",
+                "validity_reason": "TEXT",
+            },
+            "index_pe_stats": {
+                "quality_level": "TEXT", "data_source": "TEXT", "generated_at": "TEXT",
+                "coverage_ratio": "REAL", "financial_stale_count": "INTEGER",
+                "validity_reason": "TEXT",
+            },
+        }
+        for table, columns in migrations.items():
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info([{table}])")}
+            for column, definition in columns.items():
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE [{table}] ADD COLUMN [{column}] {definition}")
 
     @staticmethod
     def _migrate_h30533_tables(conn: sqlite3.Connection):
@@ -511,16 +544,21 @@ class CacheDB:
             return
         with self._conn() as conn:
             conn.execute("DELETE FROM index_pe_daily WHERE index_code=?", (index_code,))
+            existing = {row[1] for row in conn.execute("PRAGMA table_info([index_pe_daily])")}
+            columns = [column for column in df.columns if column in existing and column.isidentifier()]
+            for column in ("trade_date", "index_code", "updated_at"):
+                if column not in columns:
+                    columns.append(column)
+            names = ", ".join(f"[{column}]" for column in columns)
             records = []
             for _, row in df.iterrows():
-                records.append((
-                    row["trade_date"], index_code,
-                    row.get("total_market_cap"), row.get("total_profit_ttm"),
-                    row.get("pe_ratio"), row.get("stock_count"),
-                    time.time()
+                records.append(tuple(
+                    index_code if column == "index_code" else
+                    time.time() if column == "updated_at" else self._h30533_value(row, column)
+                    for column in columns
                 ))
             conn.executemany(
-                "INSERT OR REPLACE INTO index_pe_daily VALUES (?,?,?,?,?,?,?)",
+                f"INSERT OR REPLACE INTO index_pe_daily ({names}) VALUES ({','.join('?' for _ in columns)})",
                 records
             )
 
@@ -538,16 +576,21 @@ class CacheDB:
             return
         with self._conn() as conn:
             conn.execute("DELETE FROM index_pe_stats WHERE index_code=?", (index_code,))
+            existing = {row[1] for row in conn.execute("PRAGMA table_info([index_pe_stats])")}
+            columns = [column for column in df.columns if column in existing and column.isidentifier()]
+            for column in ("trade_date", "index_code", "updated_at"):
+                if column not in columns:
+                    columns.append(column)
+            names = ", ".join(f"[{column}]" for column in columns)
             records = []
             for _, row in df.iterrows():
-                records.append((
-                    row["trade_date"], index_code,
-                    row.get("pe_mean"), row.get("pe_std"),
-                    row.get("pe_high_line"), row.get("pe_low_line"),
-                    row.get("pe_percentile"), time.time()
+                records.append(tuple(
+                    index_code if column == "index_code" else
+                    time.time() if column == "updated_at" else self._h30533_value(row, column)
+                    for column in columns
                 ))
             conn.executemany(
-                "INSERT OR REPLACE INTO index_pe_stats VALUES (?,?,?,?,?,?,?,?)",
+                f"INSERT OR REPLACE INTO index_pe_stats ({names}) VALUES ({','.join('?' for _ in columns)})",
                 records
             )
 

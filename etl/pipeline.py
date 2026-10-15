@@ -1,11 +1,13 @@
 """ETL 管道：从原始数据计算指数 PE"""
 import time
+from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Optional
 from data_sources import get_source
 from cache.db import CacheDB
 from config import DEFAULT_LOOKBACK_DAYS, API_BATCH_DELAY
+from etl.quality import quality_level
 
 
 class PEETL:
@@ -185,6 +187,25 @@ class PEETL:
         if pe_df.empty:
             return pe_df
 
+        generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        source_name = type(self.source).__name__
+        pe_df["quality_level"] = pe_df["stock_count"].apply(
+            lambda count: quality_level(
+                source_type=source_name,
+                weight_coverage=count / total,
+                financial_stale_count=0,
+                derived_market_cap_count=0,
+                quote_disagreement_count=0,
+            )
+        )
+        pe_df["data_source"] = source_name
+        pe_df["generated_at"] = generated_at
+        pe_df["coverage_ratio"] = pe_df["stock_count"] / total
+        pe_df["financial_stale_count"] = 0
+        pe_df["validity_reason"] = pe_df["coverage_ratio"].apply(
+            lambda coverage: None if coverage >= 0.95 else "partial coverage"
+        )
+
         self.cache.save_pe_daily(index_code, pe_df)
         self._compute_statistics(index_code, pe_df)
 
@@ -323,9 +344,16 @@ class PEETL:
             lambda x: np.searchsorted(sorted_pe, x, side="left") / len(sorted_pe) * 100
         )
 
+        metadata = ["quality_level", "data_source", "generated_at", "coverage_ratio",
+                    "financial_stale_count", "validity_reason"]
+        for column in metadata:
+            if column not in pe_df:
+                pe_df[column] = None
+
         self.cache.save_pe_stats(
             index_code,
-            pe_df[["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]]
+            pe_df[["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line",
+                   "pe_percentile"] + metadata]
         )
 
     def load_result(self, index_code: str) -> Dict:
