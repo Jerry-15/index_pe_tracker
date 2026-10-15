@@ -10,6 +10,7 @@ import re
 import time
 import math
 import json
+import hashlib
 from html.parser import HTMLParser
 from typing import Any, Callable, Mapping, Optional
 
@@ -117,24 +118,36 @@ class H30533Source:
     REQUIRED_COLUMNS = [
         "index_code", "security_code", "name", "exchange", "weight",
         "as_of", "source_type", "issuer_id", "security_type", "ads_ratio",
-        "is_duplicate_issuer", "raw_metadata",
+        "is_duplicate_issuer", "raw_metadata", "source_url", "fetched_at", "response_hash",
     ]
     COLUMNS = REQUIRED_COLUMNS
+
+    @staticmethod
+    def _raw_response_bytes(payload: Any) -> bytes:
+        if isinstance(payload, bytes):
+            return payload
+        if isinstance(payload, str):
+            return payload.encode()
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()
 
     def __init__(
         self,
         fetcher: Optional[Callable[[str, Mapping[str, Any]], Any]] = None,
         timeout: int = H30533_SOURCE_TIMEOUT,
         retries: int = H30533_SOURCE_RETRIES,
+        official_url: Optional[str] = None,
+        etf_url: Optional[str] = None,
     ) -> None:
         self.fetcher = fetcher or self._request
-        self.official_url = os.getenv("H30533_OFFICIAL_URL", self.OFFICIAL_URL)
-        self.etf_url = os.getenv("H30533_ETF_URL", self.ETF_URL)
+        self.official_url = official_url or os.getenv("H30533_OFFICIAL_URL", self.OFFICIAL_URL)
+        self.etf_url = etf_url or os.getenv("H30533_ETF_URL", self.ETF_URL)
         self.timeout = timeout
         self.retries = retries
         self.rejected_rows: list[dict[str, Any]] = []
         self.source_errors: list[dict[str, Any]] = []
         self.last_source_type: Optional[str] = None
+        self.last_source_meta: dict[str, Any] = {}
+        self.source_metadata: dict[str, Any] = {}
 
     def _request(self, url: str, params: Mapping[str, Any]) -> Any:
         request_kwargs = {}
@@ -145,6 +158,14 @@ class H30533Source:
             }
         response = requests.get(url, params=params, timeout=self.timeout, **request_kwargs)
         response.raise_for_status()
+        raw = response.content if isinstance(response.content, bytes) else str(response.content).encode()
+        meta = {
+            "source_url": response.url,
+            "fetched_at": pd.Timestamp.now(tz="UTC").isoformat(),
+            "response_hash": hashlib.sha256(raw).hexdigest(),
+        }
+        self.last_source_meta = meta
+        self.source_metadata = meta
         if "FundArchivesDatas.aspx" in url:
             response.encoding = response.apparent_encoding or response.encoding
             return response.text
@@ -167,10 +188,21 @@ class H30533Source:
         ):
             for attempt in range(self.retries + 1):
                 try:
-                    result = parser(self.fetcher(url, params))
+                    payload = self.fetcher(url, params)
+                    if not self.last_source_meta:
+                        self.last_source_meta = {
+                            "source_url": url,
+                            "fetched_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                            "response_hash": hashlib.sha256(self._raw_response_bytes(payload)).hexdigest(),
+                        }
+                        self.source_metadata = self.last_source_meta
+                    result = parser(payload)
                     if result.empty:
                         raise H30533SourceError("source returned no valid constituent rows")
-                    return self.deduplicate_issuers(result)
+                    result = self.deduplicate_issuers(result)
+                    for key, value in self.last_source_meta.items():
+                        result[key] = value
+                    return result
                 except H30533SourceError as exc:
                     error = {"source_type": source_type, "code": exc.code,
                              "message": str(exc), "details": exc.details}
@@ -178,11 +210,17 @@ class H30533Source:
                     errors.append(f"{source_type}: {exc}")
                     break
                 except requests.RequestException as exc:
+                    error = {"source_type": source_type, "code": "transport_error",
+                             "message": str(exc), "details": {}}
+                    self.source_errors.append(error)
                     errors.append(f"{source_type}: {exc}")
                     if attempt < self.retries:
                         time.sleep(0.2 * (attempt + 1))
                     continue
                 except Exception as exc:
+                    error = {"source_type": source_type, "code": "transport_error",
+                             "message": str(exc), "details": {}}
+                    self.source_errors.append(error)
                     errors.append(f"{source_type}: {exc}")
                     break
         raise H30533SourceError(
@@ -321,6 +359,9 @@ class H30533Source:
                     "ads_ratio": H30533Source._optional_number(raw, "ads_ratio", "adsRatio"),
                     "is_duplicate_issuer": False,
                     "raw_metadata": dict(raw),
+                    "source_url": self.last_source_meta.get("source_url"),
+                    "fetched_at": self.last_source_meta.get("fetched_at"),
+                    "response_hash": self.last_source_meta.get("response_hash"),
                 })
             except (TypeError, ValueError) as exc:
                 self.rejected_rows.append({"row": raw, "reason": str(exc)})

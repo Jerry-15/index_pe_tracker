@@ -1,4 +1,6 @@
 import unittest
+import hashlib
+from datetime import datetime, timezone
 import sqlite3
 import tempfile
 import json
@@ -26,6 +28,39 @@ from scripts import export_static_data
 
 
 class H30533SourceTests(unittest.TestCase):
+    def test_snapshot_captures_raw_response_provenance(self):
+        payload = {
+            "data": {"indexCode": CHINA_INTL_INDEX_CODE, "asOfDate": "2026-10-13",
+                     "constituents": [{"code": "00700", "name": "Tencent",
+                                       "exchange": "HK", "weight": 7.1}]}}
+        source = H30533Source(fetcher=lambda url, params: payload, retries=0,
+                              official_url="https://official.test")
+
+        result = source.get_snapshot()
+
+        self.assertEqual(result.iloc[0]["source_url"], "https://official.test")
+        self.assertEqual(result.iloc[0]["source_type"], "csi_official")
+        self.assertEqual(result.iloc[0]["as_of"], "2026-10-13")
+        self.assertEqual(result.iloc[0]["response_hash"], hashlib.sha256(
+            source._raw_response_bytes(payload)).hexdigest())
+        self.assertTrue(datetime.fromisoformat(result.iloc[0]["fetched_at"]).tzinfo)
+        self.assertEqual(source.source_metadata["response_hash"], result.iloc[0]["response_hash"])
+
+    def test_snapshot_exposes_structured_source_errors_before_etf_fallback(self):
+        def fetcher(url, params):
+            if params.get("indexCode"):
+                raise RuntimeError("CSI unavailable")
+            return {"fundCode": CHINA_INTL_FUND_CODE, "as_of": "2026-10-10",
+                    "holdings": [{"code": "00700", "name": "Tencent",
+                                   "market": "HK", "weight_pct": 7.1}]}
+
+        source = H30533Source(fetcher=fetcher, retries=0)
+        result = source.get_snapshot()
+
+        self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
+        self.assertEqual(source.source_errors[0]["code"], "transport_error")
+        self.assertEqual(source.source_errors[0]["source_type"], "csi_official")
+
     def test_quality_level_grades_official_complete_data_as_a(self):
         self.assertEqual(
             quality_level(
@@ -588,6 +623,61 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(record["market_cap"], 800.0)
         self.assertEqual(record["verified_shares"], 10.0)
         self.assertEqual(record["profit_ttm"], 80.0)
+
+    def test_current_pe_marks_old_financial_report_stale(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+             patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                 "EPS_TTM": 2.0, "NET_PROFIT_TTM": 80.0, "CURRENCY": "USD",
+                 "REPORT_DATE": "2020-01-01",
+             }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertFalse(record["financial_fresh"])
+        self.assertIn("stale_financial", record["validity_reason"])
+        self.assertNotIn("pe", record)
+
+    def test_current_pe_reports_market_cap_method(self):
+        cases = [
+            ({"market_cap": 800.0}, "reported_market_cap"),
+            ({"shares_outstanding": 10.0}, "price_times_reported_shares"),
+            ({}, "derived_profit_div_eps"),
+        ]
+        for quote, expected in cases:
+            with self.subTest(expected=expected):
+                source = USDataSource()
+                with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0, **quote}])), \
+                     patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                         "EPS_TTM": 2.0, "NET_PROFIT_TTM": 80.0, "CURRENCY": "USD",
+                         "REPORT_DATE": "2026-09-30",
+                     }])):
+                    record = source.get_current_pe("BABA")
+                self.assertEqual(record["market_cap_method"], expected)
+
+    def test_current_pe_preserves_quote_disagreement_and_single_source_diagnostic(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+            "close": 80.0, "quote_source": "akshare", "secondary_close": 100.0,
+            "secondary_quote_source": "sina",
+        }])), patch.object(source, "get_financials", return_value=pd.DataFrame([{
+            "EPS_TTM": 2.0, "NET_PROFIT_TTM": 80.0, "CURRENCY": "USD",
+            "REPORT_DATE": "2026-09-30",
+        }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertEqual(record["quote_source_count"], 2)
+        self.assertTrue(record["quote_disagreement"])
+        self.assertIn("quote_disagreement", record["validity_reason"])
+
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{"close": 80.0}])), \
+             patch.object(source, "get_financials", return_value=pd.DataFrame([{
+                 "EPS_TTM": 2.0, "NET_PROFIT_TTM": 80.0, "CURRENCY": "USD",
+                 "REPORT_DATE": "2026-09-30",
+             }])):
+            single = source.get_current_pe("BABA")
+        self.assertEqual(single["quote_source_count"], 1)
+        self.assertFalse(single["quote_disagreement"])
+        self.assertIn("single_quote_source", single["validity_reason"])
 
     def test_current_pe_maps_reported_profit_and_derives_hk_market_cap_from_eps(self):
         source = USDataSource()
