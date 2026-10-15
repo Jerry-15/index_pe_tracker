@@ -206,7 +206,7 @@ class CacheDB:
                 "is_duplicate_issuer": "INTEGER",
                 "source_type": "TEXT", "as_of": "TEXT", "constituent_as_of": "TEXT",
                 "raw_metadata": "TEXT",
-                "validity_reason": "TEXT",
+                "validity_reason": "TEXT", "source_url": "TEXT", "fetched_at": "TEXT", "response_hash": "TEXT",
             },
             "h30533_daily_valuation": {
                 "trade_date": "TEXT", "index_code": "TEXT",
@@ -221,6 +221,11 @@ class CacheDB:
                 "validity_reason": "TEXT", "updated_at": "REAL",
                 "pe_mean": "REAL", "pe_std": "REAL", "pe_high_line": "REAL",
                 "pe_low_line": "REAL", "pe_percentile": "REAL",
+                "quality_level": "TEXT", "financial_stale_count": "INTEGER",
+                "derived_market_cap_count": "INTEGER", "quote_disagreement_count": "INTEGER",
+                "excluded_count": "INTEGER", "source_url": "TEXT", "fetched_at": "TEXT",
+                "response_hash": "TEXT", "current_constituents_backfill": "INTEGER",
+                "current_constituents_caveat": "TEXT",
             },
             "h30533_security_valuation": {
                 "snapshot_date": "TEXT", "index_code": "TEXT", "security_code": "TEXT",
@@ -230,7 +235,12 @@ class CacheDB:
                 "profit_ttm": "REAL", "earnings_yield": "REAL", "pe": "REAL",
                 "index_pe": "REAL", "financial_as_of": "TEXT", "source_date": "TEXT",
                 "source_type": "TEXT", "source": "TEXT", "data_source": "TEXT",
-                "validity_reason": "TEXT",
+                "validity_reason": "TEXT", "market_cap_method": "TEXT", "profit_currency": "TEXT",
+                "market_cap_currency": "TEXT", "fx_rate": "REAL", "normalized_profit_ttm": "REAL",
+                "financial_fresh": "INTEGER", "quote_source_count": "INTEGER",
+                "quote_disagreement": "INTEGER", "source_url": "TEXT", "fetched_at": "TEXT",
+                "response_hash": "TEXT", "current_constituents_backfill": "INTEGER",
+                "current_constituents_caveat": "TEXT",
             },
         }
         for table, columns in migrations.items():
@@ -316,6 +326,7 @@ class CacheDB:
             "snapshot_date", "index_code", "security_code", "name", "exchange", "weight",
             "issuer_id", "security_type", "ads_ratio", "is_duplicate_issuer", "source_type", "as_of",
             "constituent_as_of", "raw_metadata", "validity_reason",
+            "source_url", "fetched_at", "response_hash",
         ]
         daily_columns = [
             "trade_date", "index_code", "pe_ratio", "index_pe", "earnings_yield",
@@ -323,6 +334,9 @@ class CacheDB:
             "weight_coverage", "negative_profit_count", "missing_count", "invalid_count", "source_type",
             "source_date", "constituent_as_of", "constituent_basis", "validity_reason",
             "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile",
+            "quality_level", "financial_stale_count", "derived_market_cap_count",
+            "quote_disagreement_count", "excluded_count", "source_url", "fetched_at",
+            "response_hash", "current_constituents_backfill", "current_constituents_caveat",
             "updated_at",
         ]
         security_columns = [
@@ -330,6 +344,10 @@ class CacheDB:
             "price", "currency", "market_cap", "verified_shares", "profit_ttm",
             "earnings_yield", "index_pe", "pe", "financial_as_of", "source_date",
             "source_type", "source", "data_source", "validity_reason",
+            "market_cap_method", "profit_currency", "market_cap_currency", "fx_rate",
+            "normalized_profit_ttm", "financial_fresh", "quote_source_count",
+            "quote_disagreement", "source_url", "fetched_at", "response_hash",
+            "current_constituents_backfill", "current_constituents_caveat",
         ]
         constituent_date = constituents.iloc[0].get("as_of") or daily.iloc[0].get("trade_date")
         security_date = securities.iloc[0].get("source_date") or daily.iloc[0].get("trade_date")

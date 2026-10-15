@@ -226,6 +226,17 @@ class USETL:
                 "source": record.get("source"),
                 "data_source": record.get("data_source", record.get("source")),
                 "validity_reason": record.get("validity_reason"),
+                "market_cap_method": record.get("market_cap_method"),
+                "fx_rate": record.get("rate"),
+                "normalized_profit_ttm": record.get("normalized_profit_ttm"),
+                "financial_fresh": record.get("financial_fresh"),
+                "quote_source_count": record.get("quote_source_count"),
+                "quote_disagreement": record.get("quote_disagreement"),
+                "source_url": constituent.get("source_url"),
+                "fetched_at": constituent.get("fetched_at"),
+                "response_hash": constituent.get("response_hash"),
+                "current_constituents_backfill": False,
+                "current_constituents_caveat": None,
             })
             time.sleep(API_BATCH_DELAY)
 
@@ -249,11 +260,21 @@ class USETL:
             "negative_profit_count": aggregate["negative_profit_count"],
             "missing_count": aggregate["missing_count"],
             "invalid_count": aggregate["invalid_count"],
+            "quality_level": aggregate["quality_level"],
+            "financial_stale_count": aggregate["financial_stale_count"],
+            "derived_market_cap_count": aggregate["derived_market_cap_count"],
+            "quote_disagreement_count": aggregate["quote_disagreement_count"],
+            "excluded_count": aggregate["excluded_count"],
             "source_date": snapshot.iloc[0]["as_of"],
             "validity_reason": aggregate["reason"],
             "source_type": snapshot.iloc[0]["source_type"],
             "constituent_as_of": snapshot.iloc[0]["as_of"],
             "source": "H30533 constituent snapshot + USDataSource",
+            "source_url": snapshot.iloc[0].get("source_url"),
+            "fetched_at": snapshot.iloc[0].get("fetched_at"),
+            "response_hash": snapshot.iloc[0].get("response_hash"),
+            "current_constituents_backfill": False,
+            "current_constituents_caveat": None,
         }
         pe_df = pd.DataFrame([row])
 
