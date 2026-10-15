@@ -13,12 +13,75 @@ from data_sources.sina import SinaDataSource
 from data_sources.us import USDataSource
 from config import CHINA_INTL_FUND_CODE, CHINA_INTL_INDEX_CODE
 from etl.pipeline_us import aggregate_h30533, USETL
+from etl.quality import append_reason, is_stale, quality_level
 from etl.stats import add_valuation_stats
 from cache.db import CacheDB
 from scripts import export_static_data
 
 
 class H30533SourceTests(unittest.TestCase):
+    def test_quality_level_grades_official_complete_data_as_a(self):
+        self.assertEqual(
+            quality_level(
+                source_type="csi_official",
+                weight_coverage=0.98,
+                financial_stale_count=0,
+                derived_market_cap_count=0,
+                quote_disagreement_count=0,
+            ),
+            "A",
+        )
+
+    def test_quality_level_grades_disclosed_or_derived_data_as_b(self):
+        self.assertEqual(
+            quality_level(
+                source_type="etf_disclosure",
+                weight_coverage=0.98,
+                financial_stale_count=0,
+                derived_market_cap_count=2,
+                quote_disagreement_count=0,
+            ),
+            "B",
+        )
+        self.assertEqual(
+            quality_level(
+                source_type="csi_official",
+                weight_coverage=0.98,
+                financial_stale_count=0,
+                derived_market_cap_count=2,
+                quote_disagreement_count=0,
+            ),
+            "B",
+        )
+
+    def test_quality_level_falls_back_to_c_for_low_coverage_or_disagreement(self):
+        common = {
+            "source_type": "etf_disclosure",
+            "weight_coverage": 0.70,
+            "financial_stale_count": 0,
+            "derived_market_cap_count": 0,
+            "quote_disagreement_count": 0,
+        }
+        self.assertEqual(quality_level(**common), "C")
+        self.assertEqual(quality_level(**{**common, "weight_coverage": None}), "C")
+        self.assertEqual(quality_level(**{**common, "quote_disagreement_count": 1}), "C")
+
+    def test_is_stale_uses_utc_calendar_dates_and_rejects_bad_dates(self):
+        self.assertFalse(is_stale("2026-04-19", "2026-10-16", max_age_days=180))
+        self.assertTrue(is_stale("2026-04-18", "2026-10-16", max_age_days=180))
+        self.assertTrue(is_stale(None, "2026-10-16"))
+        self.assertTrue(is_stale("not-a-date", "2026-10-16"))
+        self.assertTrue(is_stale("2026-10-16", "not-a-date"))
+
+    def test_append_reason_is_a_stable_deduplicated_diagnostic_list(self):
+        self.assertEqual(append_reason(None, "stale_financial"), "stale_financial")
+        self.assertEqual(
+            append_reason("missing_price;stale_financial", "stale_financial"),
+            "missing_price;stale_financial",
+        )
+        self.assertEqual(append_reason("", "missing_price"), "missing_price")
+        self.assertEqual(append_reason("missing_price", ""), "missing_price")
+
     def test_common_valuation_stats_support_long_and_single_point_series(self):
         long_frame = pd.DataFrame({
             "trade_date": pd.date_range("2025-01-01", periods=500),
