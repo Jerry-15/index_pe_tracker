@@ -331,7 +331,17 @@ class H30533SourceTests(unittest.TestCase):
         result = source.get_snapshot()
 
         self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
-        self.assertEqual(calls, [{"indexCode": CHINA_INTL_INDEX_CODE}, {"fundCode": CHINA_INTL_FUND_CODE}])
+        self.assertEqual(calls, [
+            {"indexCode": CHINA_INTL_INDEX_CODE},
+            {
+                "type": "jjcc",
+                "code": CHINA_INTL_FUND_CODE,
+                "topline": "10",
+                "year": "",
+                "month": "",
+                "rt": "1",
+            },
+        ])
         self.assertEqual(source.source_errors[0]["code"], "wrong_index")
         self.assertEqual(source.source_errors[0]["details"]["expected"], CHINA_INTL_INDEX_CODE)
 
@@ -559,6 +569,33 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(result["weight"].tolist(), [0.0825, 0.051])
         self.assertEqual(result["source_type"].unique().tolist(), ["etf_disclosure"])
 
+    def test_get_snapshot_uses_eastmoney_etf_request_contract(self):
+        calls = []
+        fixture = Path(__file__).parent / "fixtures" / "fund_513050_holdings.js"
+
+        def fetcher(url, params):
+            calls.append((url, params))
+            if params.get("indexCode"):
+                raise RuntimeError("CSI unavailable")
+            return fixture.read_text()
+
+        source = H30533Source(fetcher=fetcher, retries=0)
+
+        result = source.get_snapshot()
+
+        self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
+        self.assertEqual(calls, [
+            (source.official_url, {"indexCode": CHINA_INTL_INDEX_CODE}),
+            (source.etf_url, {
+                "type": "jjcc",
+                "code": CHINA_INTL_FUND_CODE,
+                "topline": "10",
+                "year": "",
+                "month": "",
+                "rt": "1",
+            }),
+        ])
+
     def test_missing_code_and_weight_are_rejected_with_reasons(self):
         source = H30533Source()
         result = source.parse_official({
@@ -675,7 +712,17 @@ class H30533SourceTests(unittest.TestCase):
         result = source.get_snapshot()
 
         self.assertEqual(result.iloc[0]["source_type"], "etf_disclosure")
-        self.assertEqual(calls, [{"indexCode": CHINA_INTL_INDEX_CODE}, {"fundCode": CHINA_INTL_FUND_CODE}])
+        self.assertEqual(calls, [
+            {"indexCode": CHINA_INTL_INDEX_CODE},
+            {
+                "type": "jjcc",
+                "code": CHINA_INTL_FUND_CODE,
+                "topline": "10",
+                "year": "",
+                "month": "",
+                "rt": "1",
+            },
+        ])
 
     def test_get_snapshot_deduplicates_and_canonicalizes_issuer_ids(self):
         def fetcher(url, params):

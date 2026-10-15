@@ -150,7 +150,14 @@ class H30533Source:
         self.source_errors = []
         for source_type, url, parser, params in (
             ("csi_official", self.official_url, self.parse_official, {"indexCode": CHINA_INTL_INDEX_CODE}),
-            ("etf_disclosure", self.etf_url, self.parse_etf_disclosure, {"fundCode": CHINA_INTL_FUND_CODE}),
+            ("etf_disclosure", self.etf_url, self.parse_etf_disclosure, {
+                "type": "jjcc",
+                "code": CHINA_INTL_FUND_CODE,
+                "topline": "10",
+                "year": "",
+                "month": "",
+                "rt": "1",
+            }),
         ):
             for attempt in range(self.retries + 1):
                 try:
