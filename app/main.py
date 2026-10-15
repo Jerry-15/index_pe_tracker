@@ -55,11 +55,12 @@ def build_pe_chart(pe_df, index_name, reference_df=None, industry_pe=None):
         fig.add_trace(go.Scatter(
             x=band_x, y=pe_df["pe_low_line"].tolist(),
             mode="lines", line=dict(width=0), fill="tonexty",
-            fillcolor="rgba(128,128,128,0.15)", showlegend=False, hoverinfo="skip",
+            fillcolor="rgba(128,128,128,0.14)", showlegend=False, hoverinfo="skip",
         ))
 
     fig.add_trace(go.Scatter(
         x=pe_df["trade_date"], y=pe_df["pe_ratio"],
+        mode="lines+markers" if len(pe_df) <= 1 else "lines",
         name="指数PE(TTM)", line=dict(color=CHART_COLORS["pe"], width=2),
         hovertemplate="%(x|%Y-%m-%d)<br>PE: %(y:.2f)<extra></extra>",
     ))
@@ -67,15 +68,18 @@ def build_pe_chart(pe_df, index_name, reference_df=None, industry_pe=None):
     if "pe_mean" in pe_df.columns and pe_df["pe_mean"].notna().any():
         fig.add_trace(go.Scatter(
             x=pe_df["trade_date"], y=pe_df["pe_mean"],
+            mode="lines+markers" if len(pe_df) <= 1 else "lines",
             name="滚动均值", line=dict(color=CHART_COLORS["mean"], width=1.5, dash="dash"),
         ))
         fig.add_trace(go.Scatter(
             x=pe_df["trade_date"], y=pe_df["pe_high_line"],
-            name="高估线(均值+1σ)", line=dict(color=CHART_COLORS["high_line"], width=1.5, dash="dot"),
+            mode="lines+markers" if len(pe_df) <= 1 else "lines",
+            name="高估线(μ+1σ)", line=dict(color=CHART_COLORS["high_line"], width=1.5, dash="dot"),
         ))
         fig.add_trace(go.Scatter(
             x=pe_df["trade_date"], y=pe_df["pe_low_line"],
-            name="低估线(均值-1σ)", line=dict(color=CHART_COLORS["low_line"], width=1.5, dash="dot"),
+            mode="lines+markers" if len(pe_df) <= 1 else "lines",
+            name="低估线(μ-1σ)", line=dict(color=CHART_COLORS["low_line"], width=1.5, dash="dot"),
         ))
 
     # 参考PE叠加层（官方/理杏仁 月度数据，用于验证）
@@ -118,11 +122,13 @@ def build_percentile_chart(pe_df, index_name):
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=pe_df["trade_date"], y=pe_df["pe_percentile"],
-        name="PE百分位", line=dict(color=CHART_COLORS["percentile"], width=2),
+        name="PE百分位", mode="lines+markers" if len(pe_df) <= 1 else "lines",
+        line=dict(color=CHART_COLORS["percentile"], width=2),
+        fill="tozeroy", fillcolor="rgba(148,103,189,0.15)",
     ))
-    fig.add_hline(y=80, line_dash="dash", line_color="red", annotation_text="高估区(80%)")
-    fig.add_hline(y=20, line_dash="dash", line_color="green", annotation_text="低估区(20%)")
-    fig.add_hline(y=50, line_dash="solid", line_color="gray", opacity=0.5)
+    fig.add_hline(y=80, line_dash="dash", line_color="#d62728", annotation_text="高估 80%")
+    fig.add_hline(y=50, line_dash="dash", line_color="#bbb", annotation_text="中位 50%")
+    fig.add_hline(y=20, line_dash="dash", line_color="#2ca02c", annotation_text="低估 20%")
 
     fig.update_layout(
         title=f"<b>{index_name}</b> — PE 历史百分位",

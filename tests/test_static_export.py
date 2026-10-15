@@ -109,6 +109,29 @@ class StaticDeliveryTests(unittest.TestCase):
         )
         self.assertIn("if __name__ == \"__main__\":\n    main()", source.read_text())
 
+    def test_streamlit_and_static_chart_semantics_are_identical(self):
+        root = Path(__file__).parents[1]
+        streamlit = (root / "app/main.py").read_text()
+        html = (root / "static/index.html").read_text()
+
+        labels = ("高估线(μ+1σ)", "低估线(μ-1σ)", "高估 80%", "中位 50%", "低估 20%")
+        for label in labels:
+            self.assertIn(label, streamlit)
+            self.assertIn(label, html)
+        for stale in ("高估线(均值+1σ)", "低估线(均值-1σ)", "高估区(80%)", "低估区(20%)"):
+            self.assertNotIn(stale, streamlit)
+            self.assertNotIn(stale, html)
+
+        self.assertIn("rgba(128,128,128,0.14)", streamlit)
+        self.assertIn("rgba(128,128,128,0.14)", html)
+        self.assertIn("rgba(148,103,189,0.15)", streamlit)
+        self.assertIn("rgba(148,103,189,0.15)", html)
+        for color in ("#d62728", "#2ca02c", "#bbb"):
+            self.assertIn(color, streamlit)
+            self.assertIn(color, html)
+        self.assertIn("showSymbol:rows.length <= 1", html)
+        self.assertIn('mode="lines+markers" if len(pe_df) <= 1 else "lines"', streamlit)
+
 
 def test_static_rows_are_strict_json_and_keep_validity_metadata():
     df = pd.DataFrame([{
