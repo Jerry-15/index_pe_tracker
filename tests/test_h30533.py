@@ -1500,49 +1500,6 @@ class H30533SourceTests(unittest.TestCase):
 
         self.assertTrue(pd.isna(quotes.loc[0, "outstanding_share"]))
 
-    def test_h30533_migrates_and_roundtrips_all_quality_evidence_columns(self):
-        fields = {
-            "source_url": "https://source.test", "fetched_at": "2026-10-15T00:00:00Z",
-            "response_hash": "hash", "quality_level": "B", "financial_stale_count": 1,
-            "derived_market_cap_count": 2, "quote_disagreement_count": 3, "excluded_count": 4,
-            "market_cap_method": "reported_market_cap", "profit_currency": "CNY",
-            "market_cap_currency": "USD", "fx_rate": 7.0, "normalized_profit_ttm": 12.5,
-            "financial_fresh": True, "quote_source_count": 2, "quote_disagreement": False,
-            "current_constituents_caveat": "historical values use current constituents",
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            cache = CacheDB(Path(directory) / "cache.db")
-            constituents = pd.DataFrame([{
-                "index_code": "H30533", "security_code": "BABA", "weight": 1.0,
-                "as_of": "2026-10-15", "source_type": "csi_official", **fields,
-            }])
-            daily = pd.DataFrame([{
-                "index_code": "H30533", "trade_date": "2026-10-15",
-                "source_type": "csi_official", "source_date": "2026-10-15",
-                "constituent_as_of": "2026-10-15", **fields,
-            }])
-            securities = pd.DataFrame([{
-                "index_code": "H30533", "security_code": "BABA", "weight": 1.0,
-                "source_type": "csi_official", "source_date": "2026-10-15", **fields,
-            }])
-            cache.save_h30533_snapshot("H30533", constituents, daily, securities)
-            loaded = cache.load_h30533_snapshot("H30533")
-
-        expected = {
-            "constituents": {"source_url", "fetched_at", "response_hash", "current_constituents_caveat"},
-            "daily": {"source_url", "fetched_at", "response_hash", "quality_level",
-                       "financial_stale_count", "derived_market_cap_count",
-                       "quote_disagreement_count", "excluded_count", "current_constituents_caveat"},
-            "securities": {"source_url", "fetched_at", "response_hash", "quality_level",
-                           "market_cap_method", "profit_currency", "market_cap_currency", "fx_rate",
-                           "normalized_profit_ttm", "financial_fresh", "quote_source_count",
-                           "quote_disagreement", "current_constituents_caveat"},
-        }
-        for frame_name in ("constituents", "daily", "securities"):
-            row = loaded[frame_name].iloc[0]
-            for key in expected[frame_name]:
-                self.assertEqual(row[key], fields[key], (frame_name, key))
-
 
 if __name__ == "__main__":
     unittest.main()

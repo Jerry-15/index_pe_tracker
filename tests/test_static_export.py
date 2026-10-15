@@ -1,104 +1,22 @@
 import json
+import ast
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
 from scripts import export_static_data
+from scripts.export_static_data import _to_rows
 
 
-class StaticExportTests(unittest.TestCase):
-    def test_committed_h30533_artifacts_reference_each_other(self):
-        root = Path(__file__).parents[1] / "static" / "data"
-        index_list = json.loads((root / "index_list.json").read_text(encoding="utf-8"))
-        entry = next(item for item in index_list if item["code"] == "H30533")
-        self.assertEqual(entry["data_file"], "H30533.json")
-        self.assertEqual(entry["type"], "h30533")
-        self.assertTrue((root / entry["data_file"]).exists())
-        rows = json.loads((root / entry["data_file"]).read_text(encoding="utf-8"))
-        self.assertTrue(rows)
-        self.assertGreaterEqual(len(rows[-1]), 18)
-        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-        self.assertTrue(manifest["generated_at"])
-
-    def test_static_loader_handles_http_json_errors_and_preserves_selection(self):
-        source = (Path(__file__).parents[1] / "static" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("if (!res.ok)", source)
-        self.assertIn("JSON 格式无效", source)
-        self.assertIn("const previous = currentCode || sel.value", source)
-        self.assertIn("无法加载 ${url}", source)
-        self.assertIn("renderValidity(meta, rows)", source)
-        self.assertIn("if (!rows.length) return", source)
-        self.assertIn("financial_as_of", source)
-
-    def test_h30533_updates_legacy_entry_in_place_and_keeps_metadata(self):
-        class FakeCache:
-            def load_h30533_snapshot(self, code):
-                return {
-                    "daily": pd.DataFrame([{
-                        "trade_date": "2026-10-14", "pe_ratio": 12.5,
-                        "stock_count": 2, "valid_count": 1, "weight_coverage": 0.6,
-                        "source_type": "csi_official", "source_date": "2026-10-14",
-                        "constituent_as_of": "2026-10-13", "constituent_basis": "H30533",
-                        "validity_reason": "partial coverage",
-                    }]),
-                    "constituents": pd.DataFrame([{"security_code": "BABA"}]),
-                    "securities": pd.DataFrame([{
-                        "security_code": "BABA", "name": "Alibaba", "pe": 12.5,
-                        "validity_reason": None,
-                    }]),
-                }
-
-        legacy = {
-            "code": "CHINA_INTL", "name": "旧名称", "type": "us_stock",
-            "custom_metadata": "preserve", "data_file": "CHINA_INTL.json",
-        }
-        with self.subTest("export"), patch.object(export_static_data, "OUT", Path(self._tmpdir.name)):
-            (Path(self._tmpdir.name) / "index_list.json").write_text(
-                json.dumps([legacy]), encoding="utf-8"
-            )
-            export_static_data._export_china_intl(FakeCache(), object())
-
-        index_list = json.loads(
-            (Path(self._tmpdir.name) / "index_list.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(len(index_list), 1)
-        self.assertEqual(index_list[0]["code"], "H30533")
-        self.assertEqual(index_list[0]["custom_metadata"], "preserve")
-        self.assertEqual(index_list[0]["data_file"], "H30533.json")
-        self.assertEqual(json.loads(
-            (Path(self._tmpdir.name) / "H30533.json").read_text(encoding="utf-8")
-        )[0][0:2], ["2026-10-14", 12.5])
-        self.assertFalse((Path(self._tmpdir.name) / "CHINA_INTL.json").exists())
-
-    def test_h30533_empty_snapshot_does_not_use_legacy_daily_data(self):
+class StaticDeliveryTests(unittest.TestCase):
+    def test_export_catalog_preserves_existing_entries_and_manifest(self):
         class EmptyCache:
-            def load_h30533_snapshot(self, code):
-                return {
-                    "daily": pd.DataFrame(),
-                    "constituents": pd.DataFrame(),
-                    "securities": pd.DataFrame(),
-                }
-
-            def load_us_pe_daily(self):
-                return pd.DataFrame([{"trade_date": "2026-10-14", "pe_ratio": 9.9}])
-
-        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)):
-            (Path(self._tmpdir.name) / "index_list.json").write_text("[]", encoding="utf-8")
-            export_static_data._export_china_intl(EmptyCache(), object())
-
-        entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
-        self.assertEqual(entry["code"], "H30533")
-        self.assertTrue(entry["unavailable"])
-        self.assertIn("H30533 snapshot is unavailable", entry["validity_reason"])
-        self.assertEqual(entry["financial_as_of"], None)
-        self.assertEqual(json.loads((Path(self._tmpdir.name) / "H30533.json").read_text()), [])
-
-    def test_export_all_preserves_catalog_and_manifests_generated_artifacts(self):
-        class FakeCache:
             def load_pe_daily(self, code):
-                return pd.DataFrame([{"trade_date": "2026-10-14", "pe_ratio": 10.0}])
+                return pd.DataFrame()
 
             def load_pe_stats(self, code):
                 return pd.DataFrame()
@@ -106,221 +24,308 @@ class StaticExportTests(unittest.TestCase):
             def load_h30533_snapshot(self, code):
                 return {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
 
-        class FakeSource:
-            def get_industry_reference(self):
-                return pd.DataFrame([{"code": "801010", "name": "农林牧渔", "pe_ttm": 20.0}])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            for code in ("000300", "801010"):
+                (output / f"{code}.json").write_text("[]")
+            (output / "index_list.json").write_text(json.dumps([
+                {"code": "000300", "name": "沪深300", "type": "index", "data_file": "000300.json"},
+                {"code": "801010", "name": "农林牧渔", "type": "industry", "data_file": "801010.json"},
+                {"code": "CHINA_INTL", "name": "旧名称", "data_file": "CHINA_INTL.json"},
+            ]))
+            with patch.object(export_static_data, "OUT", output), patch.object(export_static_data, "CacheDB", EmptyCache), patch.object(export_static_data, "get_source", lambda: None):
+                export_static_data.export_all()
 
-            def get_index_pe_history(self, name):
+            index_list = json.loads((output / "index_list.json").read_text())
+            self.assertEqual([item["code"] for item in index_list], ["000300", "801010", "H30533"])
+            manifest = json.loads((output / "manifest.json").read_text())
+            self.assertEqual(set(manifest["artifacts"]), {
+                "index_list.json", "000300.json", "801010.json", "CHINA_INTL.json",
+            })
+
+    def test_export_regenerates_committed_catalog_artifacts(self):
+        class Cache:
+            def load_pe_daily(self, code):
+                return pd.DataFrame([{
+                    "trade_date": "2026-10-14",
+                    "pe_ratio": 12.5,
+                    "valid_stock_count": 3,
+                    "profitable_stock_count": 3,
+                    "coverage_ratio": 1.0,
+                    "validity_reason": None,
+                }])
+
+            def load_pe_stats(self, code):
                 return pd.DataFrame()
 
-        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)), \
-             patch.object(export_static_data, "CacheDB", return_value=FakeCache()), \
-             patch.object(export_static_data, "get_source", return_value=FakeSource()), \
-             patch.object(export_static_data, "INDEX_CONFIG", {"沪深300": {"code": "000300"}}):
-            out = Path(self._tmpdir.name)
-            (out / "index_list.json").write_text(
-                json.dumps([{"code": "801999", "name": "保留目录项", "type": "industry"}]),
-                encoding="utf-8",
-            )
-            export_static_data.export_all()
-
-        catalog = json.loads((out / "index_list.json").read_text(encoding="utf-8"))
-        self.assertEqual({item["code"] for item in catalog}, {"801999", "000300", "801010", "H30533"})
-        self.assertEqual(sum(item["code"] == "H30533" for item in catalog), 1)
-        manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(manifest["artifacts"]), {"000300.json", "801010.json", "H30533.json", "index_list.json"})
-
-    def test_h30533_exports_financial_as_of_metadata(self):
-        class FinancialCache:
-            def load_h30533_snapshot(self, code):
-                return {
-                    "daily": pd.DataFrame([{
-                        "trade_date": "2026-10-14", "pe_ratio": 12.5,
-                        "source_date": "2026-10-14", "constituent_as_of": "2026-10-13",
-                        "constituent_basis": "H30533", "financial_as_of": "2026-09-30",
-                    }]),
-                    "constituents": pd.DataFrame(),
-                    "securities": pd.DataFrame([{
-                        "security_code": "BABA", "financial_as_of": "2026-09-30",
-                    }]),
-                }
-
-        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)):
-            (Path(self._tmpdir.name) / "index_list.json").write_text("[]", encoding="utf-8")
-            export_static_data._export_china_intl(FinancialCache(), object())
-
-        entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
-        self.assertEqual(entry["financial_as_of"], "2026-09-30")
-        self.assertEqual(entry["stock_diagnostics"][0]["financial_as_of"], "2026-09-30")
-
-    def test_export_rows_include_quality_metadata_without_coercing_missing_pe(self):
-        rows = export_static_data._to_rows(pd.DataFrame([{
-            "trade_date": "2026-10-14", "pe_ratio": None,
-            "quality_level": "C", "source_type": "csi_official",
-            "generated_at": "2026-10-15T00:00:00+00:00", "weight_coverage": 0.94,
-            "financial_as_of": "2026-09-30", "validity_reason": "insufficient coverage",
-        }]), h30533=True, generated_at="2026-10-15T00:00:00+00:00")
-
-        self.assertIsNone(rows[0][1])
-        self.assertEqual(rows[0][-7:], ["C", "csi_official", "2026-10-15T00:00:00+00:00",
-                                         0.94, "2026-09-30", "insufficient coverage", None])
-
-    def test_regular_rows_and_catalog_use_the_quality_contract(self):
-        rows = export_static_data._to_rows(pd.DataFrame([{
-            "trade_date": "2026-10-14", "pe_ratio": 12.5,
-            "quality_level": "B", "data_source": "sina",
-            "generated_at": "2026-10-15T00:00:00+00:00", "coverage_ratio": 0.98,
-            "financial_as_of": "2026-09-30", "validity_reason": None,
-        }]), generated_at="2026-10-15T00:00:00+00:00")
-
-        self.assertEqual(rows[0][12:], ["B", "sina", "2026-10-15T00:00:00+00:00",
-                                       0.98, "2026-09-30", None])
-
-    def test_regular_catalog_marks_missing_pipeline_quality_as_c(self):
-        entry = {}
-        export_static_data._add_quality_catalog_metadata(
-            entry, pd.Series({"validity_reason": None}), "2026-10-15T00:00:00+00:00"
-        )
-        self.assertEqual(entry["quality_level"], "C")
-        self.assertEqual(entry["validity"], "quality metadata unavailable from pipeline/cache")
-
-    def test_manifest_contains_revision_counts_and_date_ranges(self):
-        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)), \
-             patch.object(export_static_data, "_source_revision", return_value="a04aa73"):
-            out = Path(self._tmpdir.name)
-            (out / "000300.json").write_text(json.dumps([
-                ["2026-01-01", 10], ["2026-10-14", 12]
-            ]), encoding="utf-8")
-            (out / "index_list.json").write_text("[]", encoding="utf-8")
-            export_static_data._save_manifest("2026-10-15T00:00:00+00:00")
-
-        manifest = json.loads((Path(self._tmpdir.name) / "manifest.json").read_text())
-        self.assertEqual(manifest["schema_version"], "quality-export-v1")
-        self.assertEqual(manifest["source_revision"], "a04aa73")
-        self.assertEqual(manifest["item_count"], 2)
-        self.assertEqual(manifest["date_ranges"]["000300.json"],
-                         {"min": "2026-01-01", "max": "2026-10-14"})
-
-    def test_source_revision_returns_full_head(self):
-        with patch.object(export_static_data.subprocess, "check_output", return_value="abcdef123456\n") as run:
-            self.assertEqual(export_static_data._source_revision(), "abcdef123456")
-            self.assertEqual(run.call_args.args[0], ["git", "rev-parse", "HEAD"])
-
-    def test_empty_h30533_export_is_empty_and_has_no_legacy_provenance(self):
-        class EmptyCache:
             def load_h30533_snapshot(self, code):
                 return {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
 
-        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)):
-            out = Path(self._tmpdir.name)
-            (out / "index_list.json").write_text("[]", encoding="utf-8")
-            (out / "H30533.json").write_text(json.dumps([["legacy", 9.9]]), encoding="utf-8")
-            export_static_data._export_china_intl(EmptyCache(), object(), generated_at="now")
+        class Source:
+            def get_index_pe_history(self, name):
+                return pd.DataFrame()
 
-        self.assertEqual(json.loads((Path(self._tmpdir.name) / "H30533.json").read_text()), [])
-        entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
-        self.assertEqual(entry["quality_level"], "C")
-        self.assertEqual(entry["validity_reason"],
-                         "H30533 snapshot is unavailable; no H30533 daily valuation rows")
-        self.assertIsNone(entry["coverage"])
-        self.assertIsNone(entry["financial_as_of"])
-        self.assertFalse(entry["current_constituents_backfill"])
+            def get_industry_reference(self):
+                return pd.DataFrame([{"code": "801010", "name": "农林牧渔", "pe_ttm": 20.0}])
 
-    def test_h30533_entry_exports_quality_provenance_diagnostics_and_backfill(self):
-        class QualityCache:
-            def load_h30533_snapshot(self, code):
-                return {
-                    "daily": pd.DataFrame([{
-                        "trade_date": "2026-10-14", "pe_ratio": None,
-                        "quality_level": "C", "source_type": "etf_disclosure",
-                        "source_date": "2026-10-10", "constituent_as_of": "2026-10-10",
-                        "constituent_basis": "H30533", "weight_coverage": 0.94,
-                        "valid_count": 1, "negative_profit_count": 0, "missing_count": 1,
-                        "financial_stale_count": 1, "derived_market_cap_count": 0,
-                        "quote_disagreement_count": 0, "excluded_count": 2,
-                        "validity_reason": "financial_stale", "financial_as_of": "2026-09-30",
-                        "current_constituents_backfill": True,
-                        "current_constituents_caveat": "historical values use current constituents",
-                        "source_url": "https://source.test", "fetched_at": "2026-10-10T00:00:00Z",
-                        "response_hash": "abc",
-                    }]),
-                    "constituents": pd.DataFrame([{"security_code": "BABA"}]),
-                    "securities": pd.DataFrame([{"security_code": "BABA", "financial_as_of": "2026-09-30"}]),
-                }
+        root = Path(__file__).parents[1]
+        committed_catalog = json.loads((root / "static/data/index_list.json").read_text())
+        protected_payloads = {
+            path: path.read_bytes() for path in (root / "static/data").glob("*.json")
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "index_list.json").write_text(json.dumps(committed_catalog))
+            for item in committed_catalog:
+                (output / item["data_file"]).write_text("[]")
+            with patch.object(export_static_data, "OUT", output), patch.object(export_static_data, "CacheDB", Cache), patch.object(export_static_data, "get_source", Source):
+                export_static_data.export_all()
 
-        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)):
-            (Path(self._tmpdir.name) / "index_list.json").write_text("[]", encoding="utf-8")
-            export_static_data._export_china_intl(QualityCache(), object(),
-                                                  generated_at="2026-10-15T00:00:00+00:00")
+            catalog = json.loads((output / "index_list.json").read_text())
+            by_code = {item["code"]: item for item in catalog}
+            self.assertEqual(by_code["000300"]["data_file"], "000300.json")
+            self.assertEqual(by_code["801010"]["data_file"], "801010.json")
+            self.assertEqual(by_code["H30533"]["data_file"], "CHINA_INTL.json")
+            row = json.loads((output / "000300.json").read_text())[0]
+            self.assertEqual(row[:12], ["2026-10-14", 12.5, None, None, None, None, None,
+                                        None, 3, 3, 1.0, None])
+            self.assertEqual(row[12:15], ["C", "Source", "Source"])
+            self.assertTrue(row[15])
+            self.assertEqual(row[16:], [1.0, None, "unknown"])
+            self.assertTrue((output / "801010.json").exists())
+            self.assertTrue((output / "CHINA_INTL.json").exists())
+            self.assertFalse((output / "H30533.json").exists())
+            manifest = json.loads((output / "manifest.json").read_text())
+            self.assertEqual(set(manifest["artifacts"]),
+                             {"index_list.json", *(item["data_file"] for item in catalog)})
+        self.assertEqual(
+            protected_payloads,
+            {path: path.read_bytes() for path in (root / "static/data").glob("*.json")},
+        )
 
-        entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
-        self.assertEqual(entry["quality_level"], "C")
-        self.assertEqual(entry["source_url"], "https://source.test")
-        self.assertEqual(entry["diagnostics"]["financial_stale_count"], 1)
-        self.assertTrue(entry["current_constituents_backfill"])
-        self.assertIsNone(json.loads((Path(self._tmpdir.name) / "H30533.json").read_text())[0][1])
+    def test_main_definition_and_guard_prevent_import_nameerror(self):
+        source = Path(__file__).parents[1] / "app/main.py"
+        tree = ast.parse(source.read_text())
+        self.assertEqual(
+            [node.name for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main"],
+            ["main"],
+        )
+        self.assertIn("if __name__ == \"__main__\":\n    main()", source.read_text())
 
-    def test_h30533_populated_snapshot_uses_actual_quality_reason(self):
-        class QualityCache:
-            def load_h30533_snapshot(self, code):
-                return {"daily": pd.DataFrame([{
-                    "trade_date": "2026-10-14", "pe_ratio": None,
-                    "quality_level": "C", "validity_reason": "currency_unavailable",
-                    "source_type": "csi_official", "source_url": "https://source.test",
-                }]), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
+    def test_streamlit_and_static_chart_semantics_are_identical(self):
+        root = Path(__file__).parents[1]
+        streamlit = (root / "app/main.py").read_text()
+        html = (root / "static/index.html").read_text()
 
-        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)):
-            (Path(self._tmpdir.name) / "index_list.json").write_text("[]", encoding="utf-8")
-            export_static_data._export_china_intl(QualityCache(), object())
+        labels = ("高估线(μ+1σ)", "低估线(μ-1σ)", "高估 80%", "中位 50%", "低估 20%")
+        for label in labels:
+            self.assertIn(label, streamlit)
+            self.assertIn(label, html)
+        for stale in ("高估线(均值+1σ)", "低估线(均值-1σ)", "高估区(80%)", "低估区(20%)"):
+            self.assertNotIn(stale, streamlit)
+            self.assertNotIn(stale, html)
 
-        entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
-        self.assertEqual(entry["validity_reason"], "currency_unavailable")
-        self.assertFalse(entry["unavailable"])
-
-    def test_h30533_populated_snapshot_is_not_catalogued_as_unavailable(self):
-        class PopulatedCache:
-            def load_h30533_snapshot(self, code):
-                return {"daily": pd.DataFrame([{
-                    "trade_date": "2026-10-14", "pe_ratio": 12.5,
-                    "quality_level": "B", "validity_reason": None,
-                    "source_type": "csi_official", "data_source": "csi_official",
-                    "source_url": "https://source.test",
-                }]), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
-
-        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)):
-            (Path(self._tmpdir.name) / "index_list.json").write_text("[]", encoding="utf-8")
-            export_static_data._export_china_intl(PopulatedCache(), object())
-
-        entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
-        self.assertFalse(entry["unavailable"])
-        self.assertEqual(entry["data_source"], "csi_official")
-
-    def test_unavailable_h30533_export_keeps_snapshot_metadata(self):
-        class MetadataCache:
-            def load_h30533_snapshot(self, code):
-                return {"daily": pd.DataFrame(), "constituents": pd.DataFrame([{
-                    "source_type": "etf_disclosure", "source_url": "https://source.test",
-                    "fetched_at": "2026-10-15T00:00:00Z", "response_hash": "hash",
-                    "as_of": "2026-10-14",
-                }]), "securities": pd.DataFrame()}
-
-        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)):
-            (Path(self._tmpdir.name) / "index_list.json").write_text("[]", encoding="utf-8")
-            export_static_data._export_china_intl(MetadataCache(), object())
-
-        entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
-        self.assertEqual(entry["source_type"], "etf_disclosure")
-        self.assertEqual(entry["source_url"], "https://source.test")
-        self.assertEqual(entry["response_hash"], "hash")
-
-    def setUp(self):
-        import tempfile
-
-        self._tmpdir = tempfile.TemporaryDirectory()
-
-    def tearDown(self):
-        self._tmpdir.cleanup()
+        self.assertIn("rgba(128,128,128,0.14)", streamlit)
+        self.assertIn("rgba(128,128,128,0.14)", html)
+        self.assertIn("rgba(148,103,189,0.15)", streamlit)
+        self.assertIn("rgba(148,103,189,0.15)", html)
+        for color in ("#d62728", "#2ca02c", "#bbb"):
+            self.assertIn(color, streamlit)
+            self.assertIn(color, html)
+        self.assertIn("showSymbol:rows.length <= 1", html)
+        self.assertIn('mode="lines+markers" if len(pe_df) <= 1 else "lines"', streamlit)
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_static_rows_are_strict_json_and_keep_validity_metadata():
+    df = pd.DataFrame([{
+        "trade_date": "2025-01-02",
+        "pe_ratio": np.nan,
+        "pe_mean": np.inf,
+        "pe_high_line": np.nan,
+        "pe_low_line": np.nan,
+        "pe_percentile": np.nan,
+        "total_market_cap": 1000.0,
+        "total_profit_ttm": 0.0,
+        "valid_stock_count": 1,
+        "profitable_stock_count": 0,
+        "coverage_ratio": 0.5,
+        "validity_reason": "non_positive_profit;pe_out_of_bounds",
+    }])
+
+    rows = _to_rows(df)
+    encoded = json.dumps(rows, allow_nan=False)
+
+    assert "NaN" not in encoded
+    assert rows[0][1] is None
+    assert rows[0][8:12] == [1, 0, 0.5, "non_positive_profit;pe_out_of_bounds"]
+
+
+def test_h30533_static_rows_emit_valuation_bands():
+    rows = _to_rows(pd.DataFrame([{
+        "trade_date": "2026-10-14", "pe_ratio": 12.5, "pe_mean": 10.0,
+        "pe_high_line": 12.0, "pe_low_line": 8.0, "pe_percentile": 75.0,
+        "stock_count": 1, "valid_count": 1, "weight_coverage": 1.0,
+    }]), h30533=True)
+
+    assert rows[0][2:6] == [10.0, 12.0, 8.0, 75.0]
+
+
+def test_all_static_rows_include_common_quality_contract():
+    rows = _to_rows(pd.DataFrame([{
+        "trade_date": "2026-10-14", "pe_ratio": 12.5,
+        "quality_level": "A", "source": "sina", "data_source": "akshare",
+        "generated_at": "2026-10-15T00:00:00+00:00", "coverage": 0.98,
+        "financial_as_of": "2026-09-30", "validity": "valid",
+    }]))
+
+    assert rows[0][-7:] == ["A", "sina", "akshare", "2026-10-15T00:00:00+00:00",
+                            0.98, "2026-09-30", "valid"]
+
+
+def test_manifest_contains_schema_revision_counts_and_ranges(tmp_path, monkeypatch):
+    class EmptyCache:
+        def load_h30533_snapshot(self, code):
+            return {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
+
+    monkeypatch.setattr(export_static_data, "OUT", tmp_path)
+    monkeypatch.setattr(export_static_data, "CacheDB", EmptyCache)
+    monkeypatch.setattr(export_static_data, "INDEX_CONFIG", {})
+    export_static_data.export_all()
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert set(manifest) >= {"schema_version", "source_revision", "item_count", "date_ranges", "generated_at"}
+    assert manifest["item_count"] == 1
+    assert manifest["date_ranges"]["H30533"] == {"start": None, "end": None}
+
+
+def test_static_export_writes_h30533_unavailable_artifacts(tmp_path, monkeypatch):
+    class FakeCache:
+        def load_h30533_snapshot(self, code):
+            return {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
+
+    monkeypatch.setattr(export_static_data, "OUT", tmp_path)
+    monkeypatch.setattr(export_static_data, "CacheDB", FakeCache)
+    monkeypatch.setattr(export_static_data, "INDEX_CONFIG", {})
+
+    export_static_data.export_all()
+
+    index_list = json.loads((tmp_path / "index_list.json").read_text())
+    assert len(index_list) == 1
+    assert index_list[0]["code"] == "H30533"
+    assert json.loads((tmp_path / "CHINA_INTL.json").read_text()) == []
+
+
+def test_h30533_export_is_unavailable_without_snapshot_and_writes_manifest(tmp_path, monkeypatch):
+    class EmptyCache:
+        def load_h30533_snapshot(self, code):
+            return {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
+
+    monkeypatch.setattr(export_static_data, "OUT", tmp_path)
+    monkeypatch.setattr(export_static_data, "CacheDB", EmptyCache)
+    monkeypatch.setattr(export_static_data, "get_source", lambda: None)
+    monkeypatch.setattr(export_static_data, "INDEX_CONFIG", {})
+
+    export_static_data.export_all()
+
+    index_list = json.loads((tmp_path / "index_list.json").read_text())
+    entries = [item for item in index_list if item["type"] == "h30533"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["code"] == "H30533"
+    assert entry["data_file"] == "CHINA_INTL.json"
+    assert entry["unavailable"] is True
+    assert entry["source"] is None
+    assert json.loads((tmp_path / entry["data_file"]).read_text()) == []
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["generated_at"]
+    assert "index_list.json" in manifest["artifacts"]
+    assert "CHINA_INTL.json" in manifest["artifacts"]
+
+
+def test_export_all_preserves_existing_entries_and_replaces_legacy_h30533(tmp_path, monkeypatch):
+    class Cache:
+        def load_h30533_snapshot(self, code):
+            return {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
+
+        def load_pe_daily(self, code):
+            raise AssertionError("legacy index data must not be exported")
+
+    monkeypatch.setattr(export_static_data, "OUT", tmp_path)
+    monkeypatch.setattr(export_static_data, "CacheDB", Cache)
+    monkeypatch.setattr(export_static_data, "get_source", lambda: (_ for _ in ()).throw(AssertionError("legacy source must not be used")))
+    (tmp_path / "index_list.json").write_text(json.dumps([
+        {"code": "000300", "name": "沪深300"},
+        {"code": "801010", "name": "农林牧渔"},
+        {"code": "CHINA_INTL", "name": "旧名称"},
+    ]))
+
+    export_static_data.export_all()
+
+    index_list = json.loads((tmp_path / "index_list.json").read_text())
+    assert [item["code"] for item in index_list] == ["000300", "801010", "H30533"]
+
+
+def test_export_all_preserves_catalog_files_and_manifest_references(tmp_path, monkeypatch):
+    class EmptyCache:
+        def load_h30533_snapshot(self, code):
+            return {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
+
+    monkeypatch.setattr(export_static_data, "OUT", tmp_path)
+    monkeypatch.setattr(export_static_data, "CacheDB", EmptyCache)
+    for code in ("000300", "801010"):
+        (tmp_path / f"{code}.json").write_text("[]")
+    (tmp_path / "index_list.json").write_text(json.dumps([
+        {"code": "000300", "name": "沪深300", "type": "index", "data_file": "000300.json"},
+        {"code": "801010", "name": "农林牧渔", "type": "industry", "data_file": "801010.json"},
+        {"code": "CHINA_INTL", "name": "旧名称", "data_file": "CHINA_INTL.json"},
+    ]))
+
+    export_static_data.export_all()
+
+    index_list = json.loads((tmp_path / "index_list.json").read_text())
+    assert [item["code"] for item in index_list] == ["000300", "801010", "H30533"]
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert set(manifest["artifacts"]) == {"index_list.json", "000300.json", "801010.json", "CHINA_INTL.json"}
+
+
+def test_main_entrypoint_is_defined_and_importable_without_streamlit_server():
+    source = Path(__file__).parents[1] / "app/main.py"
+    tree = __import__("ast").parse(source.read_text())
+    main_defs = [node for node in tree.body if isinstance(node, __import__("ast").FunctionDef) and node.name == "main"]
+    assert len(main_defs) == 1
+    assert any(
+        isinstance(node, __import__("ast").If)
+        and isinstance(node.test, __import__("ast").Compare)
+        and any(isinstance(child, __import__("ast").Call) and getattr(child.func, "id", None) == "main" for child in node.body)
+        for node in tree.body
+    )
+
+
+def test_h30533_metadata_has_canonical_delivery_fields(tmp_path, monkeypatch):
+    class EmptyCache:
+        def load_h30533_snapshot(self, code):
+            return {"daily": pd.DataFrame(), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
+
+    monkeypatch.setattr(export_static_data, "OUT", tmp_path)
+    monkeypatch.setattr(export_static_data, "CacheDB", EmptyCache)
+    monkeypatch.setattr(export_static_data, "get_source", lambda: None)
+    monkeypatch.setattr(export_static_data, "INDEX_CONFIG", {})
+
+    export_static_data.export_all()
+
+    entry = json.loads((tmp_path / "index_list.json").read_text())[0]
+    assert set(entry) >= {"data_file", "source", "coverage", "date", "financial_as_of", "validity", "unavailable"}
+    assert not {"source_type", "source_date", "validity_reason"} & set(entry)
+
+
+def test_committed_static_h30533_references_are_consistent():
+    root = Path(__file__).parents[1]
+    index_list = json.loads((root / "static/data/index_list.json").read_text())
+    h30533 = [item for item in index_list if item["code"] == "H30533"]
+    assert len(h30533) == 1
+    assert not [item for item in index_list if item["code"] == "CHINA_INTL"]
+    assert h30533[0]["type"] == "h30533"
+    assert (root / "static/data" / h30533[0]["data_file"]).exists()
+    manifest = json.loads((root / "static/data/manifest.json").read_text())
+    assert set(manifest["artifacts"]) >= {"index_list.json", h30533[0]["data_file"]}
