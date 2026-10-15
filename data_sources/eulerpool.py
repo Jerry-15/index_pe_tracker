@@ -41,6 +41,25 @@ class EulerpoolProvider:
     def market_cap(self, symbol: str) -> dict[str, Any] | None:
         return self._get(f"equity/market-cap/{symbol}")
 
+    def overview(self, symbol: str) -> dict[str, Any] | None:
+        return self._get(f"equity/overview/{symbol}")
+
+    def metrics(self, symbol: str) -> dict[str, Any] | None:
+        return self._get(f"equity/metrics/{symbol}")
+
+    def financials_ltm(self, symbol: str) -> dict[str, Any] | None:
+        return self._get(f"equity/financials-ltm/{symbol}")
+
+    def income_statement(self, symbol: str) -> list[dict[str, Any]] | None:
+        payload = self._get(f"equity/incomestatement/{symbol}")
+        return payload if isinstance(payload, list) else None
+
+    def quotes(self, symbol: str, range_name: str = "5y") -> list[dict[str, Any]] | None:
+        return self._get(f"equity/quotes/{symbol}")
+
+    def market_cap_history(self, symbol: str, range_name: str = "5y") -> dict[str, Any] | None:
+        return self._get(f"equity/market-cap/{symbol}")
+
     def verified_inputs_for(self, identifiers: list[str]) -> dict[str, Any] | None:
         """Try preferred identifiers in order, usually ISIN before ticker."""
         for identifier in identifiers:
