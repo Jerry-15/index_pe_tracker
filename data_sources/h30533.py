@@ -187,6 +187,8 @@ class H30533Source:
             }),
         ):
             for attempt in range(self.retries + 1):
+                self.last_source_meta = {}
+                self.source_metadata = {}
                 try:
                     payload = self.fetcher(url, params)
                     if not self.last_source_meta:
@@ -205,13 +207,14 @@ class H30533Source:
                     return result
                 except H30533SourceError as exc:
                     error = {"source_type": source_type, "code": exc.code,
-                             "message": str(exc), "details": exc.details}
+                             "message": str(exc), "details": exc.details,
+                             **self.last_source_meta}
                     self.source_errors.append(error)
                     errors.append(f"{source_type}: {exc}")
                     break
                 except requests.RequestException as exc:
                     error = {"source_type": source_type, "code": "transport_error",
-                             "message": str(exc), "details": {}}
+                             "message": str(exc), "details": {}, **self.last_source_meta}
                     self.source_errors.append(error)
                     errors.append(f"{source_type}: {exc}")
                     if attempt < self.retries:
@@ -219,7 +222,7 @@ class H30533Source:
                     continue
                 except Exception as exc:
                     error = {"source_type": source_type, "code": "transport_error",
-                             "message": str(exc), "details": {}}
+                             "message": str(exc), "details": {}, **self.last_source_meta}
                     self.source_errors.append(error)
                     errors.append(f"{source_type}: {exc}")
                     break

@@ -229,6 +229,7 @@ class USDataSource:
         invalid_financial_date = None
         financial_fresh = False
         market_cap_method = None
+        derived_market_cap = False
         quote_source_count = 1
         quote_disagreement = False
         try:
@@ -304,14 +305,16 @@ class USDataSource:
                 if eps_ttm > 0 and profit_ttm > 0 and price is not None:
                     verified_shares = profit_ttm / eps_ttm
                     market_cap = price * verified_shares / ads_ratio if ads_ratio else None
-                    market_cap_method = "derived_profit_div_eps" if market_cap is not None else None
+                    derived_market_cap = market_cap is not None
             except (TypeError, ValueError, ZeroDivisionError):
                 market_cap = None
 
-        if verified_shares is not None and market_cap_method is None:
-            market_cap_method = "price_times_reported_shares"
-        if market_cap is not None and market_cap_method is None:
+        if derived_market_cap:
+            market_cap_method = "derived_profit_div_eps"
+        elif market_cap is not None:
             market_cap_method = "reported_market_cap"
+        elif verified_shares is not None:
+            market_cap_method = "price_times_reported_shares"
         if financial_as_of:
             financial_fresh = not is_stale(financial_as_of, pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d"))
 
@@ -355,7 +358,7 @@ class USDataSource:
             record["validity_reason"] = "; ".join(filter(None, [
                 record["validity_reason"], "HKD/USD conversion unavailable"
             ]))
-        if (pe_inputs_missing or invalid_financial_date is not None or not financial_fresh or
+        if (pe_inputs_missing or quote_disagreement or invalid_financial_date is not None or not financial_fresh or
                 profit_ttm is None or profit_ttm <= 0 or
                 eps_ttm is None or eps_ttm <= 0 or
                 (currency == "HKD" and not self._is_hk(stock_code))):
