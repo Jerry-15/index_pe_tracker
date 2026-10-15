@@ -188,17 +188,17 @@ class PEETL:
             return pe_df
 
         generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-        source_name = type(self.source).__name__
+        source_type = "sw_official" if str(index_code).startswith("801") else "sina"
         pe_df["quality_level"] = pe_df["stock_count"].apply(
             lambda count: quality_level(
-                source_type=source_name,
+                source_type=source_type,
                 weight_coverage=count / total,
                 financial_stale_count=0,
                 derived_market_cap_count=0,
                 quote_disagreement_count=0,
             )
         )
-        pe_df["data_source"] = source_name
+        pe_df["data_source"] = source_type
         pe_df["generated_at"] = generated_at
         pe_df["coverage_ratio"] = pe_df["stock_count"] / total
         pe_df["financial_stale_count"] = 0

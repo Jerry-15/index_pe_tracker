@@ -543,24 +543,7 @@ class CacheDB:
         if df.empty:
             return
         with self._conn() as conn:
-            conn.execute("DELETE FROM index_pe_daily WHERE index_code=?", (index_code,))
-            existing = {row[1] for row in conn.execute("PRAGMA table_info([index_pe_daily])")}
-            columns = [column for column in df.columns if column in existing and column.isidentifier()]
-            for column in ("trade_date", "index_code", "updated_at"):
-                if column not in columns:
-                    columns.append(column)
-            names = ", ".join(f"[{column}]" for column in columns)
-            records = []
-            for _, row in df.iterrows():
-                records.append(tuple(
-                    index_code if column == "index_code" else
-                    time.time() if column == "updated_at" else self._h30533_value(row, column)
-                    for column in columns
-                ))
-            conn.executemany(
-                f"INSERT OR REPLACE INTO index_pe_daily ({names}) VALUES ({','.join('?' for _ in columns)})",
-                records
-            )
+            self._save_regular_pe_table(conn, "index_pe_daily", index_code, df)
 
     def load_pe_daily(self, index_code: str) -> pd.DataFrame:
         """加载每日PE数据"""
@@ -575,24 +558,40 @@ class CacheDB:
         if df.empty:
             return
         with self._conn() as conn:
-            conn.execute("DELETE FROM index_pe_stats WHERE index_code=?", (index_code,))
-            existing = {row[1] for row in conn.execute("PRAGMA table_info([index_pe_stats])")}
-            columns = [column for column in df.columns if column in existing and column.isidentifier()]
-            for column in ("trade_date", "index_code", "updated_at"):
-                if column not in columns:
-                    columns.append(column)
-            names = ", ".join(f"[{column}]" for column in columns)
-            records = []
-            for _, row in df.iterrows():
-                records.append(tuple(
-                    index_code if column == "index_code" else
-                    time.time() if column == "updated_at" else self._h30533_value(row, column)
-                    for column in columns
-                ))
-            conn.executemany(
-                f"INSERT OR REPLACE INTO index_pe_stats ({names}) VALUES ({','.join('?' for _ in columns)})",
-                records
-            )
+            self._save_regular_pe_table(conn, "index_pe_stats", index_code, df)
+
+    def _save_regular_pe_table(self, conn, table, index_code, df):
+        """Replace an index's rows without losing omitted legacy columns."""
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info([{table}])")}
+        columns = [column for column in df.columns if column in existing and column.isidentifier()]
+        for column in ("trade_date", "index_code", "updated_at"):
+            if column not in columns:
+                columns.append(column)
+
+        dates = [self._h30533_value(row, "trade_date") for _, row in df.iterrows()]
+        placeholders = ",".join("?" for _ in dates)
+        conn.execute(
+            f"DELETE FROM [{table}] WHERE index_code=? AND trade_date NOT IN ({placeholders})",
+            [index_code, *dates],
+        )
+
+        names = ", ".join(f"[{column}]" for column in columns)
+        updates = [column for column in columns if column not in ("trade_date", "index_code")]
+        if updates:
+            assignments = ", ".join(f"[{column}]=excluded.[{column}]" for column in updates)
+            conflict = f" ON CONFLICT(trade_date, index_code) DO UPDATE SET {assignments}"
+        else:
+            conflict = " ON CONFLICT(trade_date, index_code) DO NOTHING"
+        records = [tuple(
+            index_code if column == "index_code" else
+            time.time() if column == "updated_at" else self._h30533_value(row, column)
+            for column in columns
+        ) for _, row in df.iterrows()]
+        value_placeholders = ",".join("?" for _ in columns)
+        conn.executemany(
+            f"INSERT INTO [{table}] ({names}) VALUES ({value_placeholders})" + conflict,
+            records,
+        )
 
     def load_pe_stats(self, index_code: str) -> pd.DataFrame:
         """加载统计指标"""

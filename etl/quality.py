@@ -5,6 +5,12 @@ import math
 
 
 QUALITY_LEVELS = ("A", "B", "C")
+REGULAR_SOURCE_TYPES = {
+    "sina",
+    "sw_official",
+    "SinaDataSource",
+    "SWOfficialDataSource",
+}
 MARKET_CAP_METHODS = (
     "reported_market_cap",
     "price_times_reported_shares",
@@ -40,6 +46,12 @@ def is_stale(report_date, as_of, max_age_days=180):
 
 def quality_level(*, source_type, weight_coverage, financial_stale_count,
                   derived_market_cap_count, quote_disagreement_count):
+    """Classify data quality without relaxing the H30533 safety gates.
+
+    Complete, non-stale regular-source data is A when market cap is direct.
+    Derived market caps are B for both regular and H30533 sources. Any
+    incomplete, stale, or disputed data remains C before source-specific rules.
+    """
     try:
         complete = math.isfinite(float(weight_coverage)) and float(weight_coverage) >= _MIN_COVERAGE
     except (TypeError, ValueError):
@@ -47,6 +59,8 @@ def quality_level(*, source_type, weight_coverage, financial_stale_count,
     if not complete or financial_stale_count != 0 or quote_disagreement_count != 0:
         return "C"
     if source_type == "csi_official" and derived_market_cap_count == 0:
+        return "A"
+    if source_type in REGULAR_SOURCE_TYPES and derived_market_cap_count == 0:
         return "A"
     if source_type == "etf_disclosure" or derived_market_cap_count > 0:
         return "B"
