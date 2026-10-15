@@ -225,6 +225,7 @@ class USDataSource:
         market_cap = None
         verified_shares = None
         unsupported_currency = None
+        invalid_financial_date = None
         try:
             quotes = self.get_daily_quotes(stock_code)
             if not quotes.empty and "close" in quotes.columns:
@@ -252,8 +253,9 @@ class USDataSource:
                         eps_ttm = float(fin.iloc[0][col])
                         break
                 for col in (
-                    "PROFIT_TTM", "NET_PROFIT_TTM", "TTM_NET_PROFIT",
-                    "profit_ttm", "net_profit_ttm", "ttm_net_profit",
+                    "PARENT_HOLDER_NETPROFIT", "HOLDER_PROFIT", "PROFIT_TTM",
+                    "NET_PROFIT_TTM", "TTM_NET_PROFIT", "profit_ttm",
+                    "net_profit_ttm", "ttm_net_profit",
                 ):
                     if col in fin.columns and pd.notna(fin.iloc[0][col]):
                         profit_ttm = float(fin.iloc[0][col])
@@ -269,7 +271,11 @@ class USDataSource:
                         break
                 for col in ("REPORT_DATE", "report_date", "REPORT_PERIOD", "date", "日期"):
                     if col in fin.columns and pd.notna(fin.iloc[0][col]):
-                        financial_as_of = str(fin.iloc[0][col])
+                        parsed_date = pd.to_datetime(fin.iloc[0][col], errors="coerce")
+                        if pd.isna(parsed_date):
+                            invalid_financial_date = str(fin.iloc[0][col])
+                        else:
+                            financial_as_of = parsed_date.strftime("%Y-%m-%d")
                         break
                 if "CURRENCY" in fin.columns and pd.notna(fin.iloc[0]["CURRENCY"]):
                     curr_str = str(fin.iloc[0]["CURRENCY"]).strip()
@@ -285,11 +291,23 @@ class USDataSource:
         except Exception:
             pass
 
+        if market_cap is None and profit_ttm is not None and eps_ttm is not None:
+            try:
+                if eps_ttm > 0 and profit_ttm > 0 and price is not None:
+                    verified_shares = profit_ttm / eps_ttm
+                    market_cap = price * verified_shares / ads_ratio if ads_ratio else None
+            except (TypeError, ValueError, ZeroDivisionError):
+                market_cap = None
+
         record = self.build_input_record(
             stock_code, round(price, 2) if price is not None else None, currency,
             market_cap if market_cap is not None else verified_shares, profit_ttm, financial_as_of,
             "akshare", ads_ratio,
         )
+        if invalid_financial_date:
+            record["validity_reason"] = "; ".join(filter(None, [
+                record["validity_reason"], f"invalid financial_as_of: {invalid_financial_date}"
+            ]))
         if unsupported_currency:
             record["validity_reason"] = "; ".join(filter(None, [
                 record["validity_reason"],
@@ -313,8 +331,10 @@ class USDataSource:
             record["validity_reason"] = "; ".join(filter(None, [
                 record["validity_reason"], "HKD/USD conversion unavailable"
             ]))
-        if (pe_inputs_missing or profit_ttm is None or profit_ttm <= 0 or
-                eps_ttm is None or eps_ttm <= 0 or currency == "HKD"):
+        if (pe_inputs_missing or invalid_financial_date is not None or
+                profit_ttm is None or profit_ttm <= 0 or
+                eps_ttm is None or eps_ttm <= 0 or
+                (currency == "HKD" and not self._is_hk(stock_code))):
             if eps_ttm is not None and eps_ttm <= 0:
                 record["validity_reason"] = "; ".join(
                     filter(None, [record["validity_reason"], "non_positive eps_ttm"])

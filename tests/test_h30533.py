@@ -436,6 +436,75 @@ class H30533SourceTests(unittest.TestCase):
         self.assertEqual(record["verified_shares"], 10.0)
         self.assertEqual(record["profit_ttm"], 80.0)
 
+    def test_current_pe_maps_reported_profit_and_derives_hk_market_cap_from_eps(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+            "close": 12.0,
+        }])), patch.object(source, "get_financials", return_value=pd.DataFrame([{
+            "EPS_TTM": 2.0,
+            "HOLDER_PROFIT": 100.0,
+            "CURRENCY": "HKD",
+            "REPORT_DATE": "2026-09-30",
+        }])):
+            record = source.get_current_pe("00700.HK")
+
+        self.assertEqual(record["profit_ttm"], 100.0)
+        self.assertEqual(record["verified_shares"], 50.0)
+        self.assertEqual(record["market_cap"], 600.0)
+        self.assertEqual(record["market_cap_currency"], "HKD")
+        self.assertEqual(record["profit_currency"], "HKD")
+        self.assertEqual(record["pe"], 6.0)
+
+    def test_current_pe_derives_us_ads_market_cap_from_ordinary_shares(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+            "close": 80.0,
+        }])), patch.object(source, "get_financials", return_value=pd.DataFrame([{
+            "EPS_TTM": 2.0,
+            "PARENT_HOLDER_NETPROFIT": 80.0,
+            "CURRENCY": "USD",
+            "REPORT_DATE": "2026-09-30",
+        }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertEqual(record["profit_ttm"], 80.0)
+        self.assertEqual(record["verified_shares"], 40.0)
+        self.assertEqual(record["market_cap"], 400.0)
+        self.assertEqual(record["market_cap_currency"], "USD")
+        self.assertEqual(record["pe"], 5.0)
+
+    def test_current_pe_marks_invalid_report_date_unavailable(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+            "close": 80.0,
+        }])), patch.object(source, "get_financials", return_value=pd.DataFrame([{
+            "EPS_TTM": 2.0,
+            "PARENT_HOLDER_NETPROFIT": 80.0,
+            "CURRENCY": "USD",
+            "REPORT_DATE": "not-a-date",
+        }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertIsNone(record["financial_as_of"])
+        self.assertIn("invalid financial_as_of", record["validity_reason"])
+        self.assertNotIn("pe", record)
+
+    def test_current_pe_marks_unverified_currency_unavailable(self):
+        source = USDataSource()
+        with patch.object(source, "get_daily_quotes", return_value=pd.DataFrame([{
+            "close": 80.0,
+        }])), patch.object(source, "get_financials", return_value=pd.DataFrame([{
+            "EPS_TTM": 2.0,
+            "PARENT_HOLDER_NETPROFIT": 80.0,
+            "CURRENCY": "EUR",
+            "REPORT_DATE": "2026-09-30",
+        }])):
+            record = source.get_current_pe("BABA")
+
+        self.assertIsNone(record["currency"])
+        self.assertIn("unsupported currency", record["validity_reason"])
+        self.assertNotIn("pe", record)
+
     def test_pipeline_aggregates_snapshot_records_with_negative_profit_count(self):
         etl = USETL(cache=MagicMock())
         etl.h30533_source = MagicMock()
