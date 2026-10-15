@@ -275,7 +275,25 @@ class StaticExportTests(unittest.TestCase):
 
         entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
         self.assertEqual(entry["validity_reason"], "currency_unavailable")
-        self.assertTrue(entry["unavailable"])
+        self.assertFalse(entry["unavailable"])
+
+    def test_h30533_populated_snapshot_is_not_catalogued_as_unavailable(self):
+        class PopulatedCache:
+            def load_h30533_snapshot(self, code):
+                return {"daily": pd.DataFrame([{
+                    "trade_date": "2026-10-14", "pe_ratio": 12.5,
+                    "quality_level": "B", "validity_reason": None,
+                    "source_type": "csi_official", "data_source": "csi_official",
+                    "source_url": "https://source.test",
+                }]), "constituents": pd.DataFrame(), "securities": pd.DataFrame()}
+
+        with patch.object(export_static_data, "OUT", Path(self._tmpdir.name)):
+            (Path(self._tmpdir.name) / "index_list.json").write_text("[]", encoding="utf-8")
+            export_static_data._export_china_intl(PopulatedCache(), object())
+
+        entry = json.loads((Path(self._tmpdir.name) / "index_list.json").read_text())[0]
+        self.assertFalse(entry["unavailable"])
+        self.assertEqual(entry["data_source"], "csi_official")
 
     def test_unavailable_h30533_export_keeps_snapshot_metadata(self):
         class MetadataCache:

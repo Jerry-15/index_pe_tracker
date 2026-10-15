@@ -107,9 +107,7 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
     pe_df = snapshot["daily"]
     constituents = snapshot["constituents"]
     securities = snapshot["securities"]
-    unavailable_reason = None
-    if pe_df.empty:
-        unavailable_reason = "H30533 snapshot is unavailable; no H30533 daily valuation rows"
+    unavailable_reason = "H30533 snapshot is unavailable; no H30533 daily valuation rows" if pe_df.empty else None
     # 合并统计指标
     try:
         stats_df = cache.load_us_pe_stats()
@@ -153,7 +151,8 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
             "constituent_basis": _text(latest_row.get("constituent_basis")) if not pe_df.empty else None,
             "financial_as_of": financial_as_of,
             "coverage": _number(latest_row.get("weight_coverage")) if not pe_df.empty else None,
-            "quality_level": _text(latest_row.get("quality_level")) or ("C" if unavailable_reason else None),
+             "quality_level": _text(latest_row.get("quality_level")) or ("C" if unavailable_reason else None),
+             "data_source": _text(provenance_row.get("data_source")) or _text(provenance_row.get("source_type")),
             "source_url": _text(provenance_row.get("source_url")),
             "fetched_at": _text(provenance_row.get("fetched_at")),
             "response_hash": _text(provenance_row.get("response_hash")),
@@ -172,7 +171,7 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
             },
             "validity_reason": unavailable_reason or _text(latest_row.get("validity_reason")),
             "stock_diagnostics": _records(securities),
-            "unavailable": unavailable_reason is not None or _number(latest_row.get("pe_ratio")) is None,
+             "unavailable": unavailable_reason is not None,
         }
         existing_index = next(
             (n for n, item in enumerate(idx_list)

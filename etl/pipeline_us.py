@@ -258,6 +258,7 @@ class USETL:
                 "quote_source_count": record.get("quote_source_count"),
                 "fx_rate": record.get("rate"),
                 "normalized_profit_ttm": record.get("normalized_profit_ttm"),
+                "financial_fresh": record.get("financial_fresh"),
                 "source_url": constituent.get("source_url"),
                 "fetched_at": constituent.get("fetched_at"),
                 "response_hash": constituent.get("response_hash"),
@@ -534,6 +535,10 @@ class USETL:
             pe_df["source_url"] = source_meta.get("source_url")
             pe_df["fetched_at"] = source_meta.get("fetched_at")
             pe_df["response_hash"] = source_meta.get("response_hash")
+            pe_df["source_type"] = source_meta.get("source_type", "current_constituents_backfill")
+            pe_df["source_date"] = source_meta.get("as_of")
+            pe_df["constituent_as_of"] = source_meta.get("as_of")
+            pe_df["constituent_basis"] = "H30533"
             window = min(500, len(pe_df))
             pe_df["pe_mean"] = pe_df["pe_ratio"].rolling(window=window, min_periods=max(60, window // 2)).mean()
             pe_df["pe_std"] = pe_df["pe_ratio"].rolling(window=window, min_periods=max(60, window // 2)).std()
