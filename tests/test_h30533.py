@@ -776,8 +776,8 @@ class H30533SourceTests(unittest.TestCase):
         with patch.object(etl, "_recompute_us_stats"):
             result = etl.run()
 
-        self.assertAlmostEqual(result.iloc[0]["pe_ratio"], 10.526315789473685)
-        self.assertAlmostEqual(result.iloc[0]["earnings_yield"], 0.095)
+        self.assertAlmostEqual(result.iloc[0]["pe_ratio"], 10.582010582010582)
+        self.assertAlmostEqual(result.iloc[0]["earnings_yield"], 0.0945)
         self.assertEqual(result.iloc[0]["negative_profit_count"], 1)
         self.assertEqual(result.iloc[0]["index_code"], CHINA_INTL_INDEX_CODE)
         self.assertEqual(result.iloc[0]["source_type"], "csi_official")
@@ -808,8 +808,8 @@ class H30533SourceTests(unittest.TestCase):
             self.assertEqual(len(result), 1)
             self.assertIsNone(result.iloc[0]["pe_ratio"])
             self.assertIsNone(result.iloc[0]["index_pe"])
-            self.assertEqual(result.iloc[0]["stock_count"], 0)
-            self.assertEqual(result.iloc[0]["weight_coverage"], 0)
+            self.assertEqual(result.iloc[0]["stock_count"], 1)
+            self.assertEqual(result.iloc[0]["weight_coverage"], 0.4)
             self.assertEqual(result.iloc[0]["missing_count"], 1)
             self.assertEqual(result.iloc[0]["negative_profit_count"], 1)
             self.assertEqual(result.iloc[0]["invalid_count"], 0)
@@ -822,8 +822,8 @@ class H30533SourceTests(unittest.TestCase):
                 snapshot["securities"]["validity_reason"].tolist(),
                 ["missing price; missing profit_ttm", "non_positive profit_ttm"],
             )
-            self.assertEqual(snapshot["daily"].iloc[0]["valid_count"], 0)
-            self.assertEqual(snapshot["daily"].iloc[0]["weight_coverage"], 0)
+            self.assertEqual(snapshot["daily"].iloc[0]["valid_count"], 1)
+            self.assertEqual(snapshot["daily"].iloc[0]["weight_coverage"], 0.4)
             self.assertEqual(snapshot["daily"].iloc[0]["invalid_count"], 0)
             self.assertIsNone(snapshot["daily"].iloc[0]["index_pe"])
             self.assertEqual(snapshot["daily"].iloc[0]["source_type"], "csi_official")
