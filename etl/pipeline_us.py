@@ -403,7 +403,8 @@ class USETL:
                 rows.append(row)
             aggregate = aggregate_h30533(
                 pd.DataFrame(rows), min_weight_coverage=0.95,
-                fx_rates={"CNY/USD": self.source._get_fx_rate(), "HKD/USD": self.source._get_fx_rate()}
+                fx_rates={"CNY/USD": self.source._get_fx_rate(), "HKD/USD": self.source._get_fx_rate()},
+                allow_stale_for_research=True, include_negative_for_research=True,
             )
             results.append({
                 "trade_date": date,
