@@ -12,7 +12,9 @@ from etl.quality import quality_level, append_reason
 
 
 def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.95,
-                     fx_rates: Optional[dict] = None) -> dict:
+                     fx_rates: Optional[dict] = None,
+                     allow_stale_for_research: bool = False,
+                     include_negative_for_research: bool = False) -> dict:
     """Aggregate verified H30533 inputs using weighted earnings yield.
 
     Weights are always index snapshot weights.  Invalid inputs are omitted from
@@ -48,8 +50,9 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.95,
         row_reason = str(row.get("validity_reason") or "")
         if not row.get("historical_backfill") and (row.get("financial_fresh") is False or "financial_stale" in row_reason or "stale_financial" in row_reason):
             financial_stale_count += 1
-            excluded_count += 1
-            continue
+            if not allow_stale_for_research:
+                excluded_count += 1
+                continue
         if bool(row.get("quote_disagreement")) or "quote_disagreement" in row_reason:
             quote_disagreement_count += 1
             excluded_count += 1
@@ -112,8 +115,9 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.95,
             profit /= rate
         if profit <= 0:
             negative_profit_count += 1
-            excluded_count += 1
-            continue
+            if not include_negative_for_research:
+                excluded_count += 1
+                continue
 
         valid_weight += weight
         earnings_yield += weight * (profit / market_cap)
@@ -137,11 +141,15 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.95,
         derived_market_cap_count=derived_market_cap_count,
         quote_disagreement_count=quote_disagreement_count,
     )
+    # Quality C is still usable as a clearly-labelled research estimate once
+    # 80% of published weight is covered. A hard currency/zero-earnings failure
+    # remains unavailable.
+    research_usable = coverage >= 0.80 and earnings_yield > 0 and not currency_unavailable
     if qlevel == "C" and reason is None:
         reason = "quality gate failed"
 
     return {
-        "pe": 1 / earnings_yield if reason is None else None,
+        "pe": 1 / earnings_yield if (reason is None or research_usable) else None,
         "earnings_yield": earnings_yield,
         "weight_coverage": coverage,
         "valid_weight": valid_weight,
@@ -244,7 +252,11 @@ class USETL:
             return pd.DataFrame()
 
         df = pd.DataFrame(results)
-        aggregate = aggregate_h30533(df, fx_rates={"CNY/USD": self.source._get_fx_rate()})
+        aggregate = aggregate_h30533(
+            df, fx_rates={"CNY/USD": self.source._get_fx_rate()},
+            allow_stale_for_research=True,
+            include_negative_for_research=True,
+        )
         today = pd.Timestamp.today().strftime("%Y-%m-%d")
 
         row = {

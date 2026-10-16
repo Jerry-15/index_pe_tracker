@@ -19,6 +19,10 @@ class USDataSource:
         "TCEHY": 1, "NCTY": 1, "VIPS": 1, "WB": 1, "IQ": 1, "FENG": 1,
         "TCOM": 1, "LI": 1, "NIO": 1, "XPEV": 1, "TIGR": 1, "FUTU": 1,
         "SINA": 1, "SOHU": 1, "YUMC": 1, "GDS": 1, "VNET": 1,
+        # Additional ADRs found in the 513050 disclosure. Ratios are the
+        # ordinary-share-to-ADS conversion used for market-cap normalization.
+        "ATHM": 1, "BZ": 1, "JOYY": 1, "QFIN": 1, "TAL": 2,
+        "TME": 2, "YMM": 1,
     }
 
     # Eulerpool accepts ISIN as the most stable identifier. These are only
@@ -30,6 +34,15 @@ class USDataSource:
         "JOYY": "US46591M1099", "QFIN": "US88557W1018", "VIPS": "US92763W1036",
         "WB": "US9485961018", "TIGR": "US88605J1043", "FUTU": "US36118L1061",
         "GDS": "US36165L1089", "TAL": "US87484T1088",
+    }
+    EULERPOOL_HK_ISIN = {
+        "00700": "KYG875721634", "09988": "US01609W1027", "09618": "US47215P1066",
+        "09999": "US64110W1027", "09888": "US0567521085", "01810": "KYG9830T1067",
+        "01024": "KYG532631028", "09961": "KYG9066F1019", "03690": "KYG596691041",
+        "09626": "US0900401060", "03888": "KYG5264Y1089", "06618": "KYG5074A1004",
+        "00772": "KYG2121R1039",
+        "00241": "BMG0171K1018", "09899": "KYG2215N1097",
+        "02423": "US4824971042",
     }
 
     def __init__(self):
@@ -240,6 +253,9 @@ class USDataSource:
         verified_shares = None
         unsupported_currency = None
         invalid_financial_date = None
+        external_market_currency = None
+        external_source = None
+        identifiers = [symbol]
         financial_fresh = False
         market_cap_method = None
         derived_market_cap = False
@@ -313,14 +329,15 @@ class USDataSource:
         except Exception:
             pass
 
-        if not self._is_hk(stock_code) and (market_cap is None or currency is None):
+        if not self._is_hk(stock_code):
             identifiers = [self.EULERPOOL_ISIN[symbol]] if symbol in self.EULERPOOL_ISIN else []
             identifiers.append(symbol)
             external = self.eulerpool.verified_inputs_for(identifiers)
             if external:
-                market_cap = market_cap or external.get("market_cap")
-                verified_shares = verified_shares or external.get("verified_shares")
-                currency = currency or external.get("market_cap_currency")
+                market_cap = external.get("market_cap") or market_cap
+                verified_shares = external.get("verified_shares") or verified_shares
+                currency = external.get("market_cap_currency") or currency
+                external_market_currency = external.get("market_cap_currency")
                 if external.get("source"):
                     external_source = external["source"]
                 else:
@@ -329,6 +346,34 @@ class USDataSource:
                 external_source = None
         else:
             external_source = None
+
+        if self._is_hk(stock_code) and symbol in self.EULERPOOL_HK_ISIN:
+            identifiers = [self.EULERPOOL_HK_ISIN[symbol]]
+            external = self.eulerpool.verified_inputs_for(identifiers)
+            if external:
+                market_cap = external.get("market_cap") or market_cap
+                verified_shares = external.get("verified_shares") or verified_shares
+                external_market_currency = external.get("market_cap_currency") or external_market_currency
+                external_source = external.get("source") or external_source
+
+        if external_source:
+            financial = self.eulerpool.financial_inputs(identifiers)
+            if financial:
+                profit_ttm = financial.get("profit_ttm")
+                eps_ttm = financial.get("eps_ttm")
+                financial_as_of = financial.get("financial_as_of")
+                currency = financial.get("currency") or currency
+
+        if external_source and (profit_ttm is None or financial_as_of is None):
+            identifiers = [self.EULERPOOL_ISIN[symbol]] if symbol in self.EULERPOOL_ISIN else []
+            identifiers.append(symbol)
+            financial = self.eulerpool.financial_inputs(identifiers)
+            if financial:
+                profit_ttm = financial.get("profit_ttm") or profit_ttm
+                eps_ttm = financial.get("eps_ttm") or eps_ttm
+                financial_as_of = financial.get("financial_as_of") or financial_as_of
+                currency = financial.get("currency") or currency
+                external_source = financial.get("source") or external_source
 
         if market_cap is None and verified_shares is None and profit_ttm is not None and eps_ttm is not None:
             try:
@@ -366,7 +411,7 @@ class USDataSource:
         record["eps"] = record["eps_ttm"]
         record["market_cap"] = market_cap
         record["verified_shares"] = verified_shares
-        record["market_cap_currency"] = "HKD" if self._is_hk(stock_code) else "USD"
+        record["market_cap_currency"] = external_market_currency or ("HKD" if self._is_hk(stock_code) else "USD")
         record["profit_currency"] = currency
         record["financial_fresh"] = financial_fresh
         record["market_cap_method"] = market_cap_method if is_valid_market_cap_method(market_cap_method) else None
@@ -378,8 +423,10 @@ class USDataSource:
             record["validity_reason"] = append_reason(record["validity_reason"], "quote_disagreement")
         pe_inputs_missing = any(
             record[field] is None
-            for field in ("price", "currency", "shares_or_market_cap", "ads_ratio")
+            for field in ("price", "currency", "shares_or_market_cap")
         )
+        if market_cap_method == "derived_profit_div_eps" and ads_ratio is None:
+            pe_inputs_missing = True
         if profit_ttm is not None and profit_ttm <= 0:
             record["validity_reason"] = "; ".join(filter(None, [
                 record["validity_reason"], "non_positive profit_ttm"
@@ -408,6 +455,9 @@ class USDataSource:
             record["validity_reason"] = "; ".join(filter(None, [
                 record["validity_reason"], "CNY/USD conversion unavailable"
             ]))
+            return record
+        if ads_ratio is None:
+            record["validity_reason"] = append_reason(record["validity_reason"], "missing ads_ratio")
             return record
         eps_usd = eps_ttm * ads_ratio if currency == "USD" else eps_ttm * ads_ratio / rate
         pe = price / eps_usd if price is not None and eps_usd > 0 else None
