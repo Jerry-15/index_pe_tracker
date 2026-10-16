@@ -8,6 +8,7 @@ import os
 from typing import Any
 
 import requests
+from data_models.security import SecurityRecord
 
 
 class EulerpoolProvider:
@@ -85,6 +86,18 @@ class EulerpoolProvider:
                 result["identifier"] = identifier
                 return result
         return None
+
+    def security_record(self, identifiers: list[str], security_code: str) -> SecurityRecord | None:
+        inputs = self.verified_inputs_for(identifiers)
+        financial = self.financial_inputs(identifiers)
+        if not inputs and not financial:
+            return None
+        merged = {"security_code": security_code}
+        merged.update(inputs or {})
+        merged.update(financial or {})
+        merged["market_cap_method"] = "reported_market_cap" if merged.get("market_cap") is not None else None
+        merged["price_currency"] = merged.get("market_cap_currency") or merged.get("currency")
+        return SecurityRecord.from_mapping(merged)
 
     def financial_inputs(self, identifiers: list[str]) -> dict[str, Any] | None:
         """Return normalized LTM profit/EPS/date alongside profile currency."""
