@@ -137,11 +137,15 @@ def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.95,
         derived_market_cap_count=derived_market_cap_count,
         quote_disagreement_count=quote_disagreement_count,
     )
+    # Quality C is still usable as a clearly-labelled research estimate once
+    # 80% of published weight is covered. A hard currency/zero-earnings failure
+    # remains unavailable.
+    research_usable = coverage >= 0.80 and earnings_yield > 0 and not currency_unavailable
     if qlevel == "C" and reason is None:
         reason = "quality gate failed"
 
     return {
-        "pe": 1 / earnings_yield if reason is None else None,
+        "pe": 1 / earnings_yield if (reason is None or research_usable) else None,
         "earnings_yield": earnings_yield,
         "weight_coverage": coverage,
         "valid_weight": valid_weight,

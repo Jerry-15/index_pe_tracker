@@ -41,6 +41,8 @@ class USDataSource:
         "01024": "KYG532631028", "09961": "KYG9066F1019", "03690": "KYG596691041",
         "09626": "US0900401060", "03888": "KYG5264Y1089", "06618": "KYG5074A1004",
         "00772": "KYG2121R1039",
+        "00241": "BMG0171K1018", "09899": "KYG2215N1097",
+        "02423": "US4824971042",
     }
 
     def __init__(self):
@@ -409,7 +411,7 @@ class USDataSource:
         record["eps"] = record["eps_ttm"]
         record["market_cap"] = market_cap
         record["verified_shares"] = verified_shares
-        record["market_cap_currency"] = "HKD" if self._is_hk(stock_code) else (external_market_currency or "USD")
+        record["market_cap_currency"] = external_market_currency or ("HKD" if self._is_hk(stock_code) else "USD")
         record["profit_currency"] = currency
         record["financial_fresh"] = financial_fresh
         record["market_cap_method"] = market_cap_method if is_valid_market_cap_method(market_cap_method) else None
