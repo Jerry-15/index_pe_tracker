@@ -6,25 +6,12 @@ import akshare as ak
 import pandas as pd
 from typing import Any, Optional
 from config import API_RETRY_TIMES, API_RETRY_DELAY
-
-
-def _append_reason(existing: Optional[str], reason: str) -> str:
-    return "; ".join(filter(None, (existing, reason)))
-
-
-def _is_financial_stale(value: Optional[str]) -> bool:
-    if not value:
-        return True
-    parsed = pd.to_datetime(value, errors="coerce")
-    if pd.isna(parsed):
-        return True
-    return (pd.Timestamp.now(tz="UTC").tz_localize(None) - parsed).days > 365
+from etl.quality import is_stale, append_reason, is_valid_market_cap_method
+from data_sources.eulerpool import EulerpoolProvider
 
 
 class USDataSource:
     """美股数据获取：行情 + 财务指标（EPS_TTM / ADS校正）"""
-
-    SUPPORTED_CURRENCIES = frozenset(("CNY", "HKD", "USD"))
 
     # ADS比例：1 ADS = N 股普通股（BABA 为 8:1）
     ADS_RATIO = {
@@ -32,12 +19,36 @@ class USDataSource:
         "TCEHY": 1, "NCTY": 1, "VIPS": 1, "WB": 1, "IQ": 1, "FENG": 1,
         "TCOM": 1, "LI": 1, "NIO": 1, "XPEV": 1, "TIGR": 1, "FUTU": 1,
         "SINA": 1, "SOHU": 1, "YUMC": 1, "GDS": 1, "VNET": 1,
+        # Additional ADRs found in the 513050 disclosure. Ratios are the
+        # ordinary-share-to-ADS conversion used for market-cap normalization.
+        "ATHM": 1, "BZ": 1, "JOYY": 1, "QFIN": 1, "TAL": 2,
+        "TME": 2, "YMM": 1,
     }
 
-    def __init__(self, secondary_quote_fetcher=None):
+    # Eulerpool accepts ISIN as the most stable identifier. These are only
+    # identifiers, never valuation inputs; missing mappings fall back to ticker.
+    EULERPOOL_ISIN = {
+        "BABA": "US01609W1027", "PDD": "US7223041028", "JD": "US47215P1066",
+        "NTES": "US64110W1027", "TAL": "US87484T1088", "TME": "US88034P1093",
+        "YMM": "US55034L1098", "ATHM": "US04590W1036", "BZ": "US05610D1019",
+        "JOYY": "US46591M1099", "QFIN": "US88557W1018", "VIPS": "US92763W1036",
+        "WB": "US9485961018", "TIGR": "US88605J1043", "FUTU": "US36118L1061",
+        "GDS": "US36165L1089", "TAL": "US87484T1088",
+    }
+    EULERPOOL_HK_ISIN = {
+        "00700": "KYG875721634", "09988": "US01609W1027", "09618": "US47215P1066",
+        "09999": "US64110W1027", "09888": "US0567521085", "01810": "KYG9830T1067",
+        "01024": "KYG532631028", "09961": "KYG9066F1019", "03690": "KYG596691041",
+        "09626": "US0900401060", "03888": "KYG5264Y1089", "06618": "KYG5074A1004",
+        "00772": "KYG2121R1039",
+        "00241": "BMG0171K1018", "09899": "KYG2215N1097",
+        "02423": "US4824971042",
+    }
+
+    def __init__(self):
         self._fx_rate: Optional[float] = None
         self._fx_cached_at: float = 0
-        self.secondary_quote_fetcher = secondary_quote_fetcher
+        self.eulerpool = EulerpoolProvider()
 
     @staticmethod
     def build_input_record(
@@ -47,38 +58,42 @@ class USDataSource:
         shares_or_market_cap: Optional[float],
         profit_ttm: Optional[float],
         financial_as_of: Optional[str],
-        source: Optional[str],
+        source: str,
         ads_ratio: Optional[float] = None,
     ) -> dict[str, Any]:
         """Build a common quote/financial record without sentinel zeros."""
-        code_key = str(code).strip().upper()
-        ads_ratio = USDataSource.ADS_RATIO.get(code_key) if ads_ratio is None else ads_ratio
-        missing_ads_ratio = ads_ratio is None
-        try:
-            ads_ratio = None if ads_ratio is None else float(ads_ratio)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("ads_ratio must be positive and finite") from exc
-        if not missing_ads_ratio and (not math.isfinite(ads_ratio) or ads_ratio <= 0):
-            raise ValueError("ads_ratio must be positive and finite")
         missing = []
-        for field, value in (
-            ("price", price), ("currency", currency),
-            ("shares_or_market_cap", shares_or_market_cap), ("profit_ttm", profit_ttm),
-            ("financial_as_of", financial_as_of), ("source", source),
+        invalid = []
+        for field, value, positive in (
+            ("price", price, True),
+            ("shares_or_market_cap", shares_or_market_cap, True),
+            ("profit_ttm", profit_ttm, True),
         ):
-            try:
-                is_missing = value is None or (isinstance(value, str) and not value.strip()) or bool(pd.isna(value))
-            except (TypeError, ValueError):
-                is_missing = False
-            if is_missing:
+            if value is None:
                 missing.append(field)
-        diagnostics = [f"missing {field}" for field in missing]
-        if missing_ads_ratio:
-            diagnostics.append("missing ads_ratio")
-        if currency is not None and not pd.isna(currency):
-            currency_key = str(currency).strip().upper()
-            if currency_key not in USDataSource.SUPPORTED_CURRENCIES:
-                diagnostics.append(f"unsupported currency: {currency}")
+                continue
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                invalid.append(field)
+                continue
+            if not math.isfinite(numeric_value) or (positive and numeric_value <= 0):
+                invalid.append(field)
+        if currency is None:
+            missing.append("currency")
+        if financial_as_of is None:
+            missing.append("financial_as_of")
+        ads_ratio_invalid = False
+        if ads_ratio is None:
+            missing.append("ads_ratio")
+        else:
+            try:
+                ads_ratio = float(ads_ratio)
+                ads_ratio_invalid = not math.isfinite(ads_ratio) or ads_ratio <= 0
+            except (TypeError, ValueError):
+                ads_ratio_invalid = True
+            if ads_ratio_invalid:
+                invalid.append("ads_ratio")
         return {
             "code": code,
             "price": price,
@@ -87,11 +102,15 @@ class USDataSource:
             "profit_ttm": profit_ttm,
             "financial_as_of": financial_as_of,
             "source": source,
-            "ads_ratio": int(ads_ratio) if ads_ratio is not None and ads_ratio.is_integer() else ads_ratio,
-            "validity_reason": "; ".join(diagnostics) or None,
+            "ads_ratio": ads_ratio,
+            "eps_ttm": None,
+            "validity_reason": "; ".join(
+                [*(f"missing {field}" for field in missing),
+                 *(f"invalid {field}" for field in invalid)]
+            ) or None,
         }
 
-    def _get_fx_rate(self) -> float:
+    def _get_fx_rate(self) -> Optional[float]:
         """获取最新 USD/CNY 中间价"""
         now = time.time()
         if self._fx_rate is not None and now - self._fx_cached_at < 86400:
@@ -108,7 +127,7 @@ class USDataSource:
                 pass
             if attempt < API_RETRY_TIMES - 1:
                 time.sleep(API_RETRY_DELAY * (attempt + 1))
-        return 7.1771
+        return None
 
     def get_constituents(self, index_code: str) -> pd.DataFrame:
         """返回预定义的中概互联网成分股（35只：22港股+13美股ADR，去重）"""
@@ -145,10 +164,13 @@ class USDataSource:
                     })
                     df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
                     df = df.sort_values("date").reset_index(drop=True)
-                    keep = ["date", "open", "high", "low", "close", "volume", "amount"]
+                    keep = ["date", "open", "high", "low", "close", "volume", "amount",
+                            "market_cap", "marketCap", "MARKET_CAP", "total_market_cap",
+                            "shares_outstanding", "outstanding_share", "total_shares", "shares"]
                     existing = [c for c in keep if c in df.columns]
                     df = df[existing]
-                    df["outstanding_share"] = 0.0
+                    if "outstanding_share" not in df.columns:
+                        df["outstanding_share"] = float("nan")
                     if start_date:
                         df = df[df["date"] >= start_date]
                     if end_date:
@@ -170,10 +192,13 @@ class USDataSource:
                                             "amount": "amount"})
                     df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
                     df = df.sort_values("date").reset_index(drop=True)
-                    keep = ["date", "open", "high", "low", "close", "volume", "amount"]
+                    keep = ["date", "open", "high", "low", "close", "volume", "amount",
+                            "market_cap", "marketCap", "MARKET_CAP", "total_market_cap",
+                            "shares_outstanding", "outstanding_share", "total_shares", "shares"]
                     existing = [c for c in keep if c in df.columns]
                     df = df[existing]
-                    df["outstanding_share"] = 0.0
+                    if "outstanding_share" not in df.columns:
+                        df["outstanding_share"] = float("nan")
                     if start_date:
                         df = df[df["date"] >= start_date]
                     if end_date:
@@ -213,183 +238,235 @@ class USDataSource:
                     else:
                         return pd.DataFrame()
 
-    def get_current_pe(self, stock_code: str) -> Optional[dict]:
-        """获取单只股票的当前 PE（港股直接 price/EPS_TTM，美股按实际币种换算）"""
+    def get_current_pe(self, stock_code: str) -> dict:
+        """获取当前 PE，并始终返回统一的行情/财务输入记录。"""
+        symbol = stock_code.replace(".HK", "")
+        ads_ratio = 1.0 if self._is_hk(stock_code) else (
+            float(self.ADS_RATIO[symbol]) if symbol in self.ADS_RATIO else None
+        )
+        price = None
+        currency = "HKD" if self._is_hk(stock_code) else None
+        eps_ttm = None
+        profit_ttm = None
+        financial_as_of = None
+        market_cap = None
+        verified_shares = None
+        unsupported_currency = None
+        invalid_financial_date = None
+        external_market_currency = None
+        external_source = None
+        identifiers = [symbol]
+        financial_fresh = False
+        market_cap_method = None
+        derived_market_cap = False
+        quote_source_count = 1
+        quote_disagreement = False
         try:
             quotes = self.get_daily_quotes(stock_code)
-            if quotes.empty:
-                return None
-            price = float(quotes.iloc[-1]["close"])
-            quote_row = quotes.iloc[-1]
-            market_cap = None
-            verified_shares = None
-            reported_market_cap = False
-            for col in ("market_cap", "marketCap", "MARKET_CAP", "total_market_cap"):
-                if col in quote_row.index and pd.notna(quote_row[col]):
-                    market_cap = float(quote_row[col])
-                    reported_market_cap = True
-                    break
-            for col in ("verified_shares", "shares_outstanding", "outstanding_share", "total_shares", "shares"):
-                if col in quote_row.index and pd.notna(quote_row[col]):
-                    verified_shares = float(quote_row[col])
-                    break
-            secondary_price = None
-            if self.secondary_quote_fetcher is not None:
-                try:
-                    secondary_price = self.secondary_quote_fetcher(stock_code)
-                    if secondary_price is not None:
-                        secondary_price = float(secondary_price)
-                except (TypeError, ValueError):
-                    secondary_price = None
-
-            fin = self.get_financials(stock_code)
-            if fin.empty:
-                return None
-
-            # 获取 EPS_TTM 和币种
-            eps_ttm = None
-            currency = None
-            for col in ["EPS_TTM", "BASIC_EPS"]:
-                if col in fin.columns:
-                    eps_ttm = fin[col].iloc[0]
-                    break
-            if eps_ttm is None or pd.isna(eps_ttm) or eps_ttm <= 0:
-                return None
-            profit_ttm = None
-            for col in ("NET_PROFIT_TTM", "PROFIT_TTM", "TTM_NET_PROFIT", "profit_ttm", "net_profit_ttm"):
-                if col in fin.columns and pd.notna(fin.iloc[0][col]):
-                    profit_ttm = float(fin.iloc[0][col])
-                    break
-            financial_as_of = None
-            for col in ("REPORT_DATE", "report_date", "REPORT_PERIOD", "date"):
-                if col in fin.columns and pd.notna(fin.iloc[0][col]):
-                    parsed = pd.to_datetime(fin.iloc[0][col], errors="coerce")
-                    financial_as_of = None if pd.isna(parsed) else parsed.strftime("%Y-%m-%d")
-                    break
-            # 检测实际币种
-            if "CURRENCY" in fin.columns and pd.notna(fin["CURRENCY"].iloc[0]):
-                curr_str = str(fin["CURRENCY"].iloc[0])
-                if "美元" in curr_str or "USD" in curr_str.upper():
-                    currency = "USD"
-                elif "港元" in curr_str or "HKD" in curr_str.upper():
-                    currency = "HKD"
-                elif "人民币" in curr_str or "CNY" in curr_str.upper():
-                    currency = "CNY"
-            if not currency:
-                return {
-                    "code": stock_code, "price": round(price, 2),
-                    "currency": None, "eps_ttm": float(eps_ttm),
-                    "validity_reason": "missing currency",
-                }
-
-            if market_cap is None:
+            if not quotes.empty and "close" in quotes.columns:
+                value = quotes.iloc[-1]["close"]
+                if pd.notna(value):
+                    price = float(value)
+                quote = quotes.iloc[-1]
+                if pd.notna(quote.get("secondary_close")):
+                    quote_source_count = 2
+                    quote_disagreement = abs(float(value) - float(quote["secondary_close"])) / float(value) > 0.01
                 for col in ("market_cap", "marketCap", "MARKET_CAP", "total_market_cap"):
-                    if col in fin.columns and pd.notna(fin.iloc[0][col]):
-                        market_cap = float(fin.iloc[0][col])
-                        reported_market_cap = True
+                    if col in quote.index and pd.notna(quote[col]):
+                        market_cap = float(quote[col])
                         break
-            if verified_shares is None:
-                for col in ("verified_shares", "shares_outstanding", "outstanding_share", "total_shares", "shares"):
+                for col in ("verified_shares", "shares_outstanding", "outstanding_share",
+                            "total_shares", "shares"):
+                    if col in quote.index and pd.notna(quote[col]):
+                        verified_shares = float(quote[col])
+                        break
+        except Exception:
+            pass
+
+        try:
+            fin = self.get_financials(stock_code)
+            if not fin.empty:
+                for col in ("EPS_TTM", "BASIC_EPS"):
                     if col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        eps_ttm = float(fin.iloc[0][col])
+                        break
+                for col in (
+                    "PARENT_HOLDER_NETPROFIT", "HOLDER_PROFIT", "PROFIT_TTM",
+                    "NET_PROFIT_TTM", "TTM_NET_PROFIT", "profit_ttm",
+                    "net_profit_ttm", "ttm_net_profit",
+                ):
+                    if col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        profit_ttm = float(fin.iloc[0][col])
+                        break
+                for col in ("market_cap", "marketCap", "MARKET_CAP", "total_market_cap", "总市值"):
+                    if market_cap is None and col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        market_cap = float(fin.iloc[0][col])
+                        break
+                for col in ("verified_shares", "shares_outstanding", "outstanding_share",
+                            "total_shares", "shares", "TOTAL_SHARES", "总股本"):
+                    if verified_shares is None and col in fin.columns and pd.notna(fin.iloc[0][col]):
                         verified_shares = float(fin.iloc[0][col])
                         break
-            if market_cap is None and verified_shares is not None and price is not None:
-                market_cap = price * verified_shares
-            if market_cap is None and verified_shares is None and profit_ttm and eps_ttm:
-                verified_shares = profit_ttm / float(eps_ttm)
-                market_cap = price * verified_shares if price is not None else None
-            market_cap_method = (
-                "reported_market_cap" if market_cap is not None and reported_market_cap else
-                "price_times_reported_shares" if verified_shares is not None and market_cap is not None else
-                "derived_profit_div_eps" if market_cap is not None else None
-            )
-            financial_fresh = not _is_financial_stale(financial_as_of)
-
-            result = {
-                "code": stock_code,
-                "price": round(price, 2),
-                "currency": "HKD" if self._is_hk(stock_code) else currency,
-                "profit_currency": "HKD" if self._is_hk(stock_code) else currency,
-                "market_cap_currency": "HKD" if self._is_hk(stock_code) else currency,
-                "eps_ttm": round(float(eps_ttm), 4),
-                "quote_source_count": 2 if secondary_price is not None else 1,
-                "quote_disagreement": bool(secondary_price is not None and price and
-                    abs(price - secondary_price) / abs(price) > 0.01),
-                "market_cap": market_cap,
-                "verified_shares": verified_shares,
-                "market_cap_method": market_cap_method,
-                "financial_as_of": financial_as_of,
-                "financial_fresh": financial_fresh,
-            }
-            if result["quote_source_count"] == 1:
-                result["validity_reason"] = "single_quote_source"
-            if result["quote_disagreement"]:
-                result["validity_reason"] = "; ".join(filter(None, [
-                    result.get("validity_reason"), "quote_disagreement"
-                ]))
-            if not financial_fresh:
-                result["validity_reason"] = _append_reason(result.get("validity_reason"), "financial_stale")
-            if self._is_hk(stock_code):
-                eps_val = float(eps_ttm)
-                pe = price / eps_val if eps_val > 0 else None
-                if not result["quote_disagreement"] and financial_fresh:
-                    result["pe"] = round(pe, 2) if pe else None
-                return result
-            else:
-                # 美股：根据实际币种决定换算方式
-                rate = self._get_fx_rate()
-                ads_ratio = self.ADS_RATIO.get(stock_code)
-                try:
-                    ads_ratio = None if ads_ratio is None else float(ads_ratio)
-                except (TypeError, ValueError):
-                    return {
-                        "code": stock_code,
-                        "price": round(price, 2),
-                        "currency": currency,
-                        "ads_ratio": ads_ratio,
-                        "eps_ttm_usd": None,
-                        "validity_reason": "invalid ads_ratio",
-                    }
-                if ads_ratio is None or not math.isfinite(ads_ratio) or ads_ratio <= 0:
-                    return {
-                        "code": stock_code,
-                        "price": round(price, 2),
-                        "currency": currency,
-                        "ads_ratio": ads_ratio,
-                        "eps_ttm_usd": None,
-                        "validity_reason": "invalid ads_ratio",
-                    }
-                if currency == "USD":
-                    # EPS 已经是 USD，直接用（不再除以汇率）
-                    eps_usd = float(eps_ttm) * ads_ratio
-                else:
-                    # EPS 为 CNY/HKD，换算为 USD
-                    eps_usd = float(eps_ttm) * ads_ratio / rate
-
-                pe = price / eps_usd if eps_usd > 0 else None
-
-                # EPS 单位修复：akshare 对部分美股中概的 BASIC_EPS 返回了偏小10倍的错误值
-                # 检测方法：CNY币种 + PE>15 → 将 EPS×10（使PE降低到合理范围）
-                # 已验证：BABA(17.45)/PDD(33.61) PE<15不受影响；JD/NTES/GDS/LI 需修正
-                if pe is not None and currency == "CNY" and pe > 15:
-                    alt_pe = price / (eps_usd * 10)
-                    if alt_pe > 0:
-                        eps_usd = eps_usd * 10
-                        pe = alt_pe
-
-                result.update({
-                    "eps_ttm_cny": float(eps_ttm) if currency != "USD" else None,
-                    "ads_ratio": ads_ratio,
-                    "eps_ttm_usd": round(eps_usd, 4),
-                    "rate": rate,
-                    "normalized_profit_ttm": (float(profit_ttm) / rate
-                                               if currency != "USD" else float(profit_ttm)),
-                })
-                if not result["quote_disagreement"] and financial_fresh:
-                    result["pe"] = round(pe, 2) if pe else None
-                return result
+                for col in ("REPORT_DATE", "report_date", "REPORT_PERIOD", "date", "日期"):
+                    if col in fin.columns and pd.notna(fin.iloc[0][col]):
+                        parsed_date = pd.to_datetime(fin.iloc[0][col], errors="coerce")
+                        if pd.isna(parsed_date):
+                            invalid_financial_date = str(fin.iloc[0][col])
+                        else:
+                            financial_as_of = parsed_date.strftime("%Y-%m-%d")
+                        break
+                if "CURRENCY" in fin.columns and pd.notna(fin.iloc[0]["CURRENCY"]):
+                    curr_str = str(fin.iloc[0]["CURRENCY"]).strip()
+                    currency = None
+                    if "美元" in curr_str or "USD" in curr_str.upper():
+                        currency = "USD"
+                    elif "港元" in curr_str or "HKD" in curr_str.upper():
+                        currency = "HKD"
+                    elif "人民币" in curr_str or "CNY" in curr_str.upper():
+                        currency = "CNY"
+                    else:
+                        unsupported_currency = curr_str
         except Exception:
-            return None
+            pass
+
+        if not self._is_hk(stock_code):
+            identifiers = [self.EULERPOOL_ISIN[symbol]] if symbol in self.EULERPOOL_ISIN else []
+            identifiers.append(symbol)
+            external = self.eulerpool.verified_inputs_for(identifiers)
+            if external:
+                market_cap = external.get("market_cap") or market_cap
+                verified_shares = external.get("verified_shares") or verified_shares
+                currency = external.get("market_cap_currency") or currency
+                external_market_currency = external.get("market_cap_currency")
+                if external.get("source"):
+                    external_source = external["source"]
+                else:
+                    external_source = None
+            else:
+                external_source = None
+        else:
+            external_source = None
+
+        if self._is_hk(stock_code) and symbol in self.EULERPOOL_HK_ISIN:
+            identifiers = [self.EULERPOOL_HK_ISIN[symbol]]
+            external = self.eulerpool.verified_inputs_for(identifiers)
+            if external:
+                market_cap = external.get("market_cap") or market_cap
+                verified_shares = external.get("verified_shares") or verified_shares
+                external_market_currency = external.get("market_cap_currency") or external_market_currency
+                external_source = external.get("source") or external_source
+
+        if external_source:
+            financial = self.eulerpool.financial_inputs(identifiers)
+            if financial:
+                profit_ttm = financial.get("profit_ttm")
+                eps_ttm = financial.get("eps_ttm")
+                financial_as_of = financial.get("financial_as_of")
+                currency = financial.get("currency") or currency
+
+        if external_source and (profit_ttm is None or financial_as_of is None):
+            identifiers = [self.EULERPOOL_ISIN[symbol]] if symbol in self.EULERPOOL_ISIN else []
+            identifiers.append(symbol)
+            financial = self.eulerpool.financial_inputs(identifiers)
+            if financial:
+                profit_ttm = financial.get("profit_ttm") or profit_ttm
+                eps_ttm = financial.get("eps_ttm") or eps_ttm
+                financial_as_of = financial.get("financial_as_of") or financial_as_of
+                currency = financial.get("currency") or currency
+                external_source = financial.get("source") or external_source
+
+        if market_cap is None and verified_shares is None and profit_ttm is not None and eps_ttm is not None:
+            try:
+                if eps_ttm > 0 and profit_ttm > 0 and price is not None:
+                    verified_shares = profit_ttm / eps_ttm
+                    market_cap = price * verified_shares / ads_ratio if ads_ratio else None
+                    derived_market_cap = market_cap is not None
+            except (TypeError, ValueError, ZeroDivisionError):
+                market_cap = None
+
+        if derived_market_cap:
+            market_cap_method = "derived_profit_div_eps"
+        elif market_cap is not None:
+            market_cap_method = "reported_market_cap"
+        elif verified_shares is not None:
+            market_cap_method = "price_times_reported_shares"
+        if financial_as_of:
+            financial_fresh = not is_stale(financial_as_of, pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d"))
+
+        record = self.build_input_record(
+            stock_code, round(price, 2) if price is not None else None, currency,
+            market_cap if market_cap is not None else verified_shares, profit_ttm, financial_as_of,
+            external_source or "akshare", ads_ratio,
+        )
+        if invalid_financial_date:
+            record["validity_reason"] = append_reason(record["validity_reason"], f"invalid financial_as_of: {invalid_financial_date}")
+        if not financial_fresh:
+            record["validity_reason"] = append_reason(record["validity_reason"], "stale_financial")
+        if unsupported_currency:
+            record["validity_reason"] = "; ".join(filter(None, [
+                record["validity_reason"],
+                f"unsupported currency: {unsupported_currency}",
+            ]))
+        record["eps_ttm"] = round(eps_ttm, 4) if eps_ttm is not None else None
+        record["eps"] = record["eps_ttm"]
+        record["market_cap"] = market_cap
+        record["verified_shares"] = verified_shares
+        record["market_cap_currency"] = external_market_currency or ("HKD" if self._is_hk(stock_code) else "USD")
+        record["profit_currency"] = currency
+        record["financial_fresh"] = financial_fresh
+        record["market_cap_method"] = market_cap_method if is_valid_market_cap_method(market_cap_method) else None
+        record["quote_source_count"] = quote_source_count
+        record["quote_disagreement"] = quote_disagreement
+        if quote_source_count == 1:
+            record["validity_reason"] = append_reason(record["validity_reason"], "single_quote_source")
+        if quote_disagreement:
+            record["validity_reason"] = append_reason(record["validity_reason"], "quote_disagreement")
+        pe_inputs_missing = any(
+            record[field] is None
+            for field in ("price", "currency", "shares_or_market_cap")
+        )
+        if market_cap_method == "derived_profit_div_eps" and ads_ratio is None:
+            pe_inputs_missing = True
+        if profit_ttm is not None and profit_ttm <= 0:
+            record["validity_reason"] = "; ".join(filter(None, [
+                record["validity_reason"], "non_positive profit_ttm"
+            ]))
+        if currency == "HKD" and not self._is_hk(stock_code):
+            record["validity_reason"] = "; ".join(filter(None, [
+                record["validity_reason"], "HKD/USD conversion unavailable"
+            ]))
+        if (pe_inputs_missing or quote_disagreement or invalid_financial_date is not None or not financial_fresh or
+                profit_ttm is None or profit_ttm <= 0 or
+                eps_ttm is None or eps_ttm <= 0 or
+                (currency == "HKD" and not self._is_hk(stock_code))):
+            if eps_ttm is not None and eps_ttm <= 0:
+                record["validity_reason"] = "; ".join(
+                    filter(None, [record["validity_reason"], "non_positive eps_ttm"])
+                )
+            return record
+
+        if self._is_hk(stock_code):
+            pe = price / eps_ttm if price is not None else None
+            record.update({"eps_ttm": round(eps_ttm, 4), "pe": round(pe, 2) if pe else None})
+            return record
+
+        rate = self._get_fx_rate()
+        if currency != "USD" and rate is None:
+            record["validity_reason"] = "; ".join(filter(None, [
+                record["validity_reason"], "CNY/USD conversion unavailable"
+            ]))
+            return record
+        if ads_ratio is None:
+            record["validity_reason"] = append_reason(record["validity_reason"], "missing ads_ratio")
+            return record
+        eps_usd = eps_ttm * ads_ratio if currency == "USD" else eps_ttm * ads_ratio / rate
+        pe = price / eps_usd if price is not None and eps_usd > 0 else None
+        record.update({
+            "eps_ttm_cny": eps_ttm if currency != "USD" else None,
+            "eps_ttm_usd": round(eps_usd, 4), "pe": round(pe, 2) if pe else None,
+            "rate": rate,
+        })
+        return record
 
     def get_realtime_hk(self, codes: list) -> pd.DataFrame:
         """批量获取港股实时行情（含新浪字段15/16作为参考估值）"""

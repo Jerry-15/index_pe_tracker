@@ -15,6 +15,7 @@ from config import INDEX_CONFIG, INDEX_REFERENCE, CHART_COLORS, CHINA_INTL_CONFI
 from cache.db import CacheDB
 from etl.pipeline import PEETL
 from etl.pipeline_us import USETL
+from etl.stats import add_valuation_stats
 
 
 st.set_page_config(
@@ -55,12 +56,12 @@ def build_pe_chart(pe_df, index_name, reference_df=None, industry_pe=None):
         fig.add_trace(go.Scatter(
             x=band_x, y=pe_df["pe_low_line"].tolist(),
             mode="lines", line=dict(width=0), fill="tonexty",
-            fillcolor="rgba(128,128,128,0.15)", showlegend=False, hoverinfo="skip",
+            fillcolor="rgba(128,128,128,0.14)", showlegend=False, hoverinfo="skip",
         ))
 
-    valid_pe_df = pe_df[pe_df["pe_ratio"].notna()]
     fig.add_trace(go.Scatter(
-        x=valid_pe_df["trade_date"], y=valid_pe_df["pe_ratio"],
+        x=pe_df["trade_date"], y=pe_df["pe_ratio"],
+        mode="lines+markers" if len(pe_df) <= 1 else "lines",
         name="指数PE(TTM)", line=dict(color=CHART_COLORS["pe"], width=2),
         hovertemplate="%(x|%Y-%m-%d)<br>PE: %(y:.2f)<extra></extra>",
     ))
@@ -68,15 +69,18 @@ def build_pe_chart(pe_df, index_name, reference_df=None, industry_pe=None):
     if "pe_mean" in pe_df.columns and pe_df["pe_mean"].notna().any():
         fig.add_trace(go.Scatter(
             x=pe_df["trade_date"], y=pe_df["pe_mean"],
+            mode="lines+markers" if len(pe_df) <= 1 else "lines",
             name="滚动均值", line=dict(color=CHART_COLORS["mean"], width=1.5, dash="dash"),
         ))
         fig.add_trace(go.Scatter(
             x=pe_df["trade_date"], y=pe_df["pe_high_line"],
-            name="高估线(均值+1σ)", line=dict(color=CHART_COLORS["high_line"], width=1.5, dash="dot"),
+            mode="lines+markers" if len(pe_df) <= 1 else "lines",
+            name="高估线(μ+1σ)", line=dict(color=CHART_COLORS["high_line"], width=1.5, dash="dot"),
         ))
         fig.add_trace(go.Scatter(
             x=pe_df["trade_date"], y=pe_df["pe_low_line"],
-            name="低估线(均值-1σ)", line=dict(color=CHART_COLORS["low_line"], width=1.5, dash="dot"),
+            mode="lines+markers" if len(pe_df) <= 1 else "lines",
+            name="低估线(μ-1σ)", line=dict(color=CHART_COLORS["low_line"], width=1.5, dash="dot"),
         ))
 
     # 参考PE叠加层（官方/理杏仁 月度数据，用于验证）
@@ -92,18 +96,17 @@ def build_pe_chart(pe_df, index_name, reference_df=None, industry_pe=None):
                       annotation_text=f"申万官方PE {industry_pe:.1f}", annotation_position="top left")
 
     # 标记当前值
-    if not valid_pe_df.empty:
-        latest = valid_pe_df.iloc[-1]
-        fig.add_annotation(
-            x=latest["trade_date"], y=latest["pe_ratio"],
-            text=f"当前 PE: {latest['pe_ratio']:.2f}",
-            showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2,
-            ax=40, ay=-40,
-            bgcolor="rgba(255,255,255,0.8)", bordercolor="#333", borderwidth=1,
-        )
+    latest = pe_df.iloc[-1]
+    fig.add_annotation(
+        x=latest["trade_date"], y=latest["pe_ratio"],
+        text=f"当前 PE: {latest['pe_ratio']:.2f}",
+        showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2,
+        ax=40, ay=-40,
+        bgcolor="rgba(255,255,255,0.8)", bordercolor="#333", borderwidth=1,
+    )
 
     fig.update_layout(
-        title=f"<b>{index_name}</b> — 指数 PE(TTM) 近8年走势",
+        title=f"<b>{index_name}</b> — 指数 PE(TTM) 历史走势",
         xaxis_title="日期", yaxis_title="市盈率 (PE)",
         height=500, hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -120,11 +123,13 @@ def build_percentile_chart(pe_df, index_name):
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=pe_df["trade_date"], y=pe_df["pe_percentile"],
-        name="PE百分位", line=dict(color=CHART_COLORS["percentile"], width=2),
+        name="PE百分位", mode="lines+markers" if len(pe_df) <= 1 else "lines",
+        line=dict(color=CHART_COLORS["percentile"], width=2),
+        fill="tozeroy", fillcolor="rgba(148,103,189,0.15)",
     ))
-    fig.add_hline(y=80, line_dash="dash", line_color="red", annotation_text="高估区(80%)")
-    fig.add_hline(y=20, line_dash="dash", line_color="green", annotation_text="低估区(20%)")
-    fig.add_hline(y=50, line_dash="solid", line_color="gray", opacity=0.5)
+    fig.add_hline(y=80, line_dash="dash", line_color="#d62728", annotation_text="高估 80%")
+    fig.add_hline(y=50, line_dash="dash", line_color="#bbb", annotation_text="中位 50%")
+    fig.add_hline(y=20, line_dash="dash", line_color="#2ca02c", annotation_text="低估 20%")
 
     fig.update_layout(
         title=f"<b>{index_name}</b> — PE 历史百分位",
@@ -157,30 +162,18 @@ def build_detail_charts(pe_df, index_name):
     return fig_mv, fig_profit
 
 
-def render_quality_panel(latest, h30533=False):
-    """Show the same A/B/C quality evidence for live and H30533 views."""
-    if latest is None:
-        return
-    quality = latest.get("quality_level")
-    source = latest.get("source_type", latest.get("data_source"))
-    coverage = latest.get("weight_coverage", latest.get("coverage_ratio"))
-    fields = [f"等级 {quality or '--'}", f"来源 {source or '--'}",
-              f"覆盖 {coverage * 100:.1f}%" if pd.notna(coverage) else "覆盖 --",
-              f"财务截至 {latest.get('financial_as_of') or '--'}"]
-    diagnostics = []
-    for key, label in (("financial_stale_count", "财务过期"),
-                       ("derived_market_cap_count", "推导市值"),
-                       ("quote_disagreement_count", "行情冲突"),
-                       ("excluded_count", "排除")):
-        value = latest.get(key)
-        if pd.notna(value):
-            diagnostics.append(f"{label} {int(value)}")
-    caveat = latest.get("current_constituents_caveat")
-    if latest.get("current_constituents_backfill"):
-        diagnostics.append("历史回填")
-    st.info("质量面板 | " + " · ".join(fields) +
-            (" · " + " · ".join(diagnostics) if diagnostics else "") +
-            (f" | {caveat}" if caveat else ""))
+def render_quality_panel(metadata, label="数据质量"):
+    """Render the canonical export metadata used by static and live views."""
+    st.caption(
+        f"{label}：等级 {metadata.get('quality_level') or '--'} | "
+        f"来源：{metadata.get('source') or metadata.get('data_source') or '--'} | "
+        f"生成：{metadata.get('generated_at') or '--'}"
+    )
+    st.caption(
+        f"覆盖：{metadata.get('coverage') if metadata.get('coverage') is not None else '--'} | "
+        f"财务截至：{metadata.get('financial_as_of') or '--'} | "
+        f"有效性：{metadata.get('validity') or '--'}"
+    )
 
 
 def run_update(index_code, index_name, progress_container):
@@ -212,7 +205,7 @@ def run_update(index_code, index_name, progress_container):
 
 
 def run_us_update(us_etl, progress_container):
-    """执行 H30533 数据更新。"""
+    """执行中概互联网数据更新"""
     progress_bar = progress_container.progress(0)
     status_text = progress_container.text("开始更新 H30533...")
 
@@ -226,7 +219,9 @@ def run_us_update(us_etl, progress_container):
             pass
 
     try:
-        us_etl.run_historical(progress_cb=progress_cb)
+        historical = us_etl.run_historical(progress_cb=progress_cb)
+        if historical is None or historical.empty:
+            raise RuntimeError("历史回溯未产生可持久化结果")
         progress_bar.progress(1.0)
         status_text.text("✅ H30533 更新完成！")
         time.sleep(0.5)
@@ -239,35 +234,17 @@ def run_us_update(us_etl, progress_container):
 
 def _render_china_intl(us_etl):
     """渲染 H30533 估值页面。"""
-    st.markdown("### 🌏 中证海外中国互联网50（H30533）PE(TTM)")
-    st.caption("按 H30533 成分快照计算 · 财务口径随数据源披露日期变化")
-
-    result = us_etl.load_result()
-    pe_df = result["pe_data"]
-    stock_pe = result["stock_pe"]
-    latest = pe_df.iloc[-1] if pe_df is not None and not pe_df.empty else None
-    if latest is None and result["constituents"] is not None and not result["constituents"].empty:
-        latest = result["constituents"].iloc[0].copy()
-        latest["validity_reason"] = "H30533 snapshot is unavailable"
-    financial_as_of = latest.get("financial_as_of") if latest is not None else None
-    if financial_as_of is None and stock_pe is not None and not stock_pe.empty and "financial_as_of" in stock_pe:
-        dates = stock_pe["financial_as_of"].dropna().astype(str)
-        financial_as_of = dates.max() if not dates.empty else None
-    validity_reason = latest.get("validity_reason") if latest is not None else "H30533 snapshot is unavailable"
-    if latest is not None and (pd.isna(validity_reason) or not validity_reason):
-        validity_reason = None
-    if latest is None or latest.get("pe_ratio") is None:
-        st.warning(f"H30533 当前估值不可用：{validity_reason or '缺少有效估值'}")
-    elif validity_reason:
-        st.warning(f"H30533 当前展示历史静态快照：{validity_reason}")
-    st.caption(f"财务截至：{financial_as_of or '--'}")
-
-    if latest is not None:
-        render_quality_panel(latest, h30533=True)
+    st.markdown("### 🌏 中证海外中国互联网50（H30533）")
+    snapshot = us_etl.cache.load_h30533_snapshot(CHINA_INTL_CONFIG["code"])
+    pe_df = snapshot["daily"]
+    stock_pe = snapshot["securities"]
 
     if pe_df is not None and not pe_df.empty:
+        pe_df = add_valuation_stats(pe_df)
+        latest = pe_df.iloc[-1]
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("当前 PE(TTM)", f"{latest['pe_ratio']:.2f}" if pd.notna(latest.get('pe_ratio')) else "--")
+        pe = latest.get("pe_ratio")
+        col1.metric("当前 PE(TTM)", f"{pe:.2f}" if pd.notna(pe) else "不可用")
         if "pe_mean" in pe_df.columns and pd.notna(latest.get("pe_mean")):
             col2.metric("滚动均值", f"{latest['pe_mean']:.2f}")
         if "pe_high_line" in pe_df.columns and pd.notna(latest.get("pe_high_line")):
@@ -277,46 +254,57 @@ def _render_china_intl(us_etl):
 
         st.divider()
 
-        tab1, tab2, tab3 = st.tabs(["PE 走势", "成分股 PE 快照", "说明"])
+        st.caption(
+            f"来源：{latest.get('source_type') or '未知'} | 来源日期：{latest.get('source_date') or '--'} | "
+            f"成分日期：{latest.get('constituent_as_of') or '--'} | "
+            f"权重覆盖：{latest.get('weight_coverage') if pd.notna(latest.get('weight_coverage')) else '--'} | "
+            f"财务截至：{stock_pe['financial_as_of'].max() if 'financial_as_of' in stock_pe and stock_pe['financial_as_of'].notna().any() else '--'}"
+        )
+        generated_at = latest.get("updated_at")
+        generated_label = (
+            datetime.fromtimestamp(float(generated_at)).isoformat(timespec="seconds")
+            if pd.notna(generated_at) else "--"
+        )
+        render_quality_panel({
+            "quality_level": latest.get("quality_level"),
+            "source": latest.get("source", latest.get("source_type")),
+            "data_source": latest.get("data_source"),
+            "generated_at": generated_label,
+            "coverage": latest.get("weight_coverage"),
+            "financial_as_of": stock_pe["financial_as_of"].max() if "financial_as_of" in stock_pe else None,
+            "validity": latest.get("validity", latest.get("validity_reason")),
+        })
+        st.caption(f"成分数：{len(snapshot['constituents'])}")
+        if pd.isna(pe):
+            st.warning(f"当前 PE 不可用：{latest.get('validity_reason') or '有效覆盖不足'}")
+        tab1, tab2, tab3 = st.tabs(["PE 走势", "成分股诊断", "说明"])
 
         with tab1:
             if not pe_df.empty and "pe_ratio" in pe_df.columns:
-                fig = build_pe_chart(pe_df, "H30533")
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                fig = build_pe_chart(pe_df, "中证海外中国互联网50（H30533）")
+                st.plotly_chart(fig, use_container_width=True)
 
         with tab2:
             if stock_pe is not None and not stock_pe.empty:
-                show_cols = ["code", "name", "price", "pe", "pb", "financial_as_of", "validity_reason"]
+                show_cols = ["security_code", "name", "price", "pe", "validity_reason", "financial_as_of"]
                 avail = [c for c in show_cols if c in stock_pe.columns]
                 pe_show = stock_pe[avail].copy()
-                pe_show = pe_show.rename(columns={
-                    "code": "代码", "name": "名称", "price": "最新价", "pe": "PE(TTM)",
-                    "pb": "PB", "financial_as_of": "财务截至", "validity_reason": "有效性说明",
-                })
-                pe_show = pe_show.sort_values("PE(TTM)")
+                pe_show.columns = ["代码", "名称", "最新价", "PE(TTM)", "有效性原因", "财务日期"][:len(avail)]
                 st.dataframe(pe_show, use_container_width=True, height=500)
             else:
                 st.info("暂无个股 PE 数据，请更新")
 
         with tab3:
             st.markdown("""
-            - **指数成分**：以当前 H30533 成分快照为准，成分日期见上方元数据
-            - **估值口径**：指数与个股估值均展示对应快照的有效性状态
-            - **财务口径**：个股财务截至日期在成分股快照中逐项展示，指数卡片展示可用的最新聚合日期
-            - **来源元数据**：行情、财务、成分日期和覆盖率均来自已保存的 H30533 快照
-            - ⚠️ **注意**：有效性说明、覆盖率和来源日期应与估值数值一起解读
-            - 💡 **使用方法**：在左侧选择 H30533 后点击「更新数据」
+            - **成分与权重**：来自 H30533 指数成分快照，页面同时展示来源类型和成分生效日期。
+            - **计算口径**：按成分权重汇总经核验的市值与 TTM 利润，形成加权盈利收益率。
+            - **数据覆盖**：当前 PE 仅在有效输入和最低权重覆盖条件满足时显示，否则保留不可用状态及原因。
+            - **财务截至**：成分证券财务输入的最新报告日期会随快照展示。
+            - **历史说明**：历史序列使用当前成分回溯，不代表历史真实调仓，需谨慎解读。
             """)
     else:
-        st.info("暂无 H30533 快照，请点击左侧「更新数据」开始拉取。")
-        st.markdown("""
-        **首次运行说明：**
-        1. 系统将获取 H30533 成分快照及其行情、财务数据
-        2. 数据将缓存在本地 SQLite 数据库中
-        3. 页面会同时展示成分日期、财务截至日期、来源日期和有效性说明
-        4. ⚠️ 若快照为空或覆盖不足，页面会明确标记为不可用，不使用其他指数数据替代
-        """)
+        st.info("暂无 H30533 数据，请点击左侧「更新数据」开始拉取。")
+        st.markdown("**首次运行说明：** H30533 成分快照、证券财务截至日期、来源、覆盖率和有效性原因会随数据保存。")
 
 def main():
     etl = get_etl()
@@ -388,13 +376,12 @@ def main():
             st.success("缓存已清除，请重新更新")
             st.rerun()
 
-    # All index-like products use the same series renderer. H30533 only keeps
-    # a separate constituent-detail source behind the shared result contract.
+    # Main content
     if index_type == "中证海外中国互联网50（H30533）":
-        result = us_etl.load_result()
-        result["pe_data"] = us_etl.cache.load_index_series("H30533")
-    else:
-        result = etl.load_result(index_code)
+        _render_china_intl(us_etl)
+        return
+
+    result = etl.load_result(index_code)
     pe_df = result["pe_data"]
 
     # 加载参考PE（宽基：乐咕月度历史；行业：申万官方当前值）
@@ -411,9 +398,8 @@ def main():
     # 当前估值卡片
     if pe_df is not None and not pe_df.empty:
         latest = pe_df.iloc[-1]
-        render_quality_panel(latest)
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("当前 PE(TTM)", f"{latest['pe_ratio']:.2f}" if pd.notna(latest.get("pe_ratio")) else "--")
+        col1.metric("当前 PE(TTM)", f"{latest['pe_ratio']:.2f}")
         if pd.notna(latest.get("pe_mean")):
             col2.metric("滚动均值", f"{latest['pe_mean']:.2f}")
         if pd.notna(latest.get("pe_high_line")):
@@ -422,11 +408,8 @@ def main():
             col4.metric("低估线", f"{latest['pe_low_line']:.2f}")
 
         # 数据覆盖率说明
-        if index_type == "中证海外中国互联网50（H30533）":
-            total_constituents = int(latest.get("constituent_count") or len(result.get("constituents", [])))
-        else:
-            total_constituents = len(get_constituents(index_code))
-        coverage = latest.get("valid_stock_count", latest.get("stock_count", 0))
+        total_constituents = len(get_constituents(index_code))
+        coverage = latest.get("stock_count", 0)
         ref_text = ""
         if reference_df is not None and not reference_df.empty:
             ref_text = (f" | 参考PE对比：自下而上 {latest['pe_ratio']:.2f}"
@@ -435,6 +418,15 @@ def main():
             ref_text = f" | 申万官方参考PE: {industry_pe_ref:.2f}"
         st.caption(f"📊 数据覆盖：{coverage}/{total_constituents} 只成分股 | "
                    f"更新至 {latest['trade_date']}{ref_text}")
+        render_quality_panel({
+            "quality_level": latest.get("quality_level"),
+            "source": latest.get("source", latest.get("source_type")),
+            "data_source": latest.get("data_source"),
+            "generated_at": latest.get("generated_at", latest.get("updated_at")),
+            "coverage": latest.get("coverage", latest.get("coverage_ratio")),
+            "financial_as_of": latest.get("financial_as_of"),
+            "validity": latest.get("validity", latest.get("validity_reason")),
+        })
 
         st.divider()
 
@@ -462,7 +454,7 @@ def main():
                     - **TTM对齐**：按财报公告日期对齐，滚动取最近4个季度；发布前沿用上一期数据
                     - **停牌处理**：当日无行情的成分股自动剔除（不影响分子分母）
                     - **负利润**：TTM利润 ≤ 0 的成分股不参与聚合，避免PE失真
-                    - ⚠️ **与参考PE的差异**：使用流通市值 + 当前成分股回溯，绝对水平比参考口径低 20-40%，趋势相关性中等（近8年 r≈0.7-0.8）。**估值区间判断需谨慎**，建议同时参考「参考PE」线
+                    - ⚠️ **与参考PE的差异**：使用流通市值 + 当前成分股回溯，绝对水平比参考口径低 20-40%，趋势相关性中等。**估值区间判断需谨慎**，建议同时参考「参考PE」线
                     - ⚠️ **历史成分股**：未考虑每半年调仓，精确回溯需历史成分股数据（成本高）
                     - 💡 验证方法：`python scripts/validate_pe.py` 可查看 TTM 双算法交叉验证和 PE 对照
                     """)
@@ -499,12 +491,7 @@ def main():
                     st.plotly_chart(fig_profit, use_container_width=True)
 
         with tab4:
-            if index_type == "中证海外中国互联网50（H30533）":
-                constituents = result.get("stock_pe", result.get("constituents"))
-                if constituents is None or constituents.empty:
-                    constituents = result.get("constituents", pd.DataFrame())
-            else:
-                constituents = get_constituents(index_code)
+            constituents = get_constituents(index_code)
             if not constituents.empty:
                 st.markdown(f"**{index_name} 当前成分股（{len(constituents)} 只）**")
                 st.dataframe(constituents, use_container_width=True, height=400)
@@ -537,14 +524,7 @@ def main():
                                mime="text/csv")
     else:
         st.info(f"暂无 {index_name} 的数据，请在左侧点击「更新数据」开始拉取。")
-        st.markdown(f"""
-        **首次运行说明：**
-        1. 系统将从新浪财经获取全部成分股的历史日K线和财务报表
-        2. 沪深300约300只股票，预计需要 **5-10 分钟**（后续增量更新秒级完成）
-        3. 数据将缓存在本地 SQLite 数据库中
-        4. 计算逻辑：对每日成分股汇总市值和TTM净利润 → 得出指数PE
-        5. ⚠️ 使用当前成分股回溯历史，存在轻微幸存者偏差（参考值可能与理杏仁等有5-15%差异）
-        """)
+        st.markdown("**首次运行说明：** 请在左侧更新数据。数据会缓存在本地数据库中，页面仅展示当前选择指数的有效历史结果。")
 
 
 if __name__ == "__main__":

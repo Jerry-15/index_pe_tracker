@@ -16,6 +16,13 @@ class DataSource(ABC):
         pass
 
     @abstractmethod
+    def get_trading_dates(
+        self, start_date: str = "", end_date: str = "", allow_weekday_fallback: bool = False
+    ) -> pd.DataFrame:
+        """获取交易日历；工作日回退只能显式用于离线测试。"""
+        pass
+
+    @abstractmethod
     def get_financial_reports(self, stock_code: str) -> pd.DataFrame:
         """获取单只股票利润表（季报/年报）"""
         pass

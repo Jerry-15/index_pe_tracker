@@ -9,6 +9,32 @@ from config import API_RETRY_TIMES, API_RETRY_DELAY, API_BATCH_DELAY
 
 class SinaDataSource(DataSource):
 
+    def get_trading_dates(
+        self, start_date: str = "", end_date: str = "", allow_weekday_fallback: bool = False
+    ) -> pd.DataFrame:
+        """Return the real A-share trading calendar.
+
+        Weekday generation is deliberately opt-in for offline tests only.
+        """
+        try:
+            df = ak.tool_trade_date_hist_sina()
+            if df is None or df.empty:
+                raise RuntimeError("AkShare trading calendar is empty")
+            date_col = "trade_date" if "trade_date" in df.columns else df.columns[0]
+            result = pd.DataFrame({"date": pd.to_datetime(df[date_col], errors="coerce")})
+            result = result.dropna().drop_duplicates().sort_values("date")
+            if start_date:
+                result = result[result["date"] >= pd.Timestamp(start_date)]
+            if end_date:
+                result = result[result["date"] <= pd.Timestamp(end_date)]
+            return result.reset_index(drop=True)
+        except Exception as exc:
+            if not allow_weekday_fallback:
+                raise RuntimeError(f"Failed to get trading calendar: {exc}") from exc
+            start = pd.Timestamp(start_date or pd.Timestamp.today() - pd.Timedelta(days=3650))
+            end = pd.Timestamp(end_date or pd.Timestamp.today())
+            return pd.DataFrame({"date": pd.bdate_range(start, end)})
+
     def _make_stock_symbol(self, code: str) -> str:
         """将股票代码转换为 Sina 格式 (sh600519 / sz000001)"""
         if code.startswith(("6", "5")):
@@ -110,8 +136,11 @@ class SinaDataSource(DataSource):
                 if end_date:
                     df = df[df["date"] <= end_date]
                 df = df.sort_values("date").reset_index(drop=True)
-                return df[["date", "open", "high", "low", "close", "volume",
-                           "amount", "outstanding_share", "turnover"]]
+                columns = ["date", "open", "high", "low", "close", "volume",
+                           "amount", "outstanding_share", "turnover"]
+                result = df.reindex(columns=columns)
+                result["outstanding_share"] = result["outstanding_share"].replace(0, float("nan"))
+                return result
             except Exception as e:
                 if attempt < API_RETRY_TIMES - 1:
                     time.sleep(API_RETRY_DELAY * (attempt + 1))

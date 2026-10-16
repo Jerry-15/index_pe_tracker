@@ -40,9 +40,11 @@ H30533_SOURCE_TIMEOUT = 15
 H30533_SOURCE_RETRIES = 2
 
 CHINA_INTL_CONFIG = {
-    "code": "CHINA_INTL",
-    "name": "中概互联网",
+    "code": CHINA_INTL_INDEX_CODE,
+    "name": "中证海外中国互联网50",
     "description": "美股/港股上市的中国互联网公司指数",
+    "fund_code": CHINA_INTL_FUND_CODE,
+    "source": "h30533",
 }
 
 # 默认参数

@@ -1,17 +1,11 @@
 """ETL 管道：从原始数据计算指数 PE"""
 import time
-from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Optional
 from data_sources import get_source
 from cache.db import CacheDB
-from config import (
-    DEFAULT_LOOKBACK_DAYS, API_BATCH_DELAY, CONSTITUENT_BASIS,
-    MARKET_CAP_METHOD, PE_MIN_COVERAGE, PE_MAX_RATIO,
-)
-from etl.quality import quality_level
-from etl.valuation import compute_statistics, normalize_result
+from config import DEFAULT_LOOKBACK_DAYS, API_BATCH_DELAY
 
 
 class PEETL:
@@ -22,17 +16,11 @@ class PEETL:
         self.source = get_source()
 
     def _get_trading_dates(self, days: int = DEFAULT_LOOKBACK_DAYS) -> List[str]:
-        calendar = self.cache.load_trading_calendar()
-        if not calendar.empty:
-            opened = calendar[calendar["is_open"] == 1]["trade_date"].tolist()
-            if len(opened) >= days:
-                return opened[-days:]
-        fetched = self.source.get_trading_calendar()
-        self.cache.save_trading_calendar(fetched)
-        opened = fetched[fetched["is_open"] == 1]["trade_date"].tolist()
-        if len(opened) < days:
-            raise RuntimeError("trading calendar does not cover requested lookback")
-        return opened[-days:]
+        end = pd.Timestamp.today().normalize()
+        calendar = self.source.get_trading_dates(end_date=end.strftime("%Y-%m-%d"))
+        if len(calendar) < days:
+            raise RuntimeError(f"Trading calendar returned only {len(calendar)} dates, need {days}")
+        return calendar.tail(days)["date"].dt.strftime("%Y-%m-%d").tolist()
 
     def _parse_report_period(self, report_date: pd.Timestamp) -> str:
         month, day = report_date.month, report_date.day
@@ -66,33 +54,21 @@ class PEETL:
                 })
             elif period == "H1":
                 # H1 cumulative, find previous Q1 to derive Q2
-                q1_rows = df[
-                    (df["period"] == "Q1")
-                    & (df["report_date"].dt.year == rd.year)
-                    & (df["report_date"] < rd)
-                ]
+                q1_rows = df[(df["period"] == "Q1") & (df["report_date"].dt.year == rd.year) & (df["report_date"] < rd)]
                 if q1_rows.empty:
                     continue
                 q1_profit = q1_rows.iloc[-1]["net_profit_attr"]
                 quarters.append({"report_date": rd, "quarter_profit": profit - q1_profit, "publish_date": pub})
             elif period == "Q3":
                 # Q3 cumulative (9 months), find previous H1 to derive Q3
-                h1_rows = df[
-                    (df["period"] == "H1")
-                    & (df["report_date"].dt.year == rd.year)
-                    & (df["report_date"] < rd)
-                ]
+                h1_rows = df[(df["period"] == "H1") & (df["report_date"].dt.year == rd.year) & (df["report_date"] < rd)]
                 if h1_rows.empty:
                     continue
                 h1_profit = h1_rows.iloc[-1]["net_profit_attr"]
                 quarters.append({"report_date": rd, "quarter_profit": profit - h1_profit, "publish_date": pub})
             elif period == "Annual":
                 # Annual cumulative (12 months), find previous Q3 to derive Q4
-                q3_rows = df[
-                    (df["period"] == "Q3")
-                    & (df["report_date"].dt.year == rd.year)
-                    & (df["report_date"] < rd)
-                ]
+                q3_rows = df[(df["period"] == "Q3") & (df["report_date"].dt.year == rd.year) & (df["report_date"] < rd)]
                 if q3_rows.empty:
                     continue
                 q3_profit = q3_rows.iloc[-1]["net_profit_attr"]
@@ -111,18 +87,11 @@ class PEETL:
             & ((target_date - quarterly_df["publish_date"]).dt.days <= 400)
         ].sort_values("report_date", ascending=False)
 
-        if len(available) < 4:
+        if len(available) < 2:
             return None
 
         # 取最近4个季度
         recent = available.head(4)
-        period_ordinals = (
-            recent["report_date"].dt.to_period("Q").astype(int).sort_values().to_numpy()
-        )
-        if len(period_ordinals) != 4 or not np.array_equal(
-            period_ordinals, np.arange(period_ordinals[0], period_ordinals[0] + 4)
-        ):
-            return None
         ttm = recent["quarter_profit"].sum()
 
         return ttm if ttm > 0 else None
@@ -219,33 +188,6 @@ class PEETL:
         if pe_df.empty:
             return pe_df
 
-        generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-        source_type = "sw_official" if str(index_code).startswith("801") else "sina"
-        pe_df["quality_level"] = pe_df["stock_count"].apply(
-            lambda count: quality_level(
-                source_type=source_type,
-                weight_coverage=count / total,
-                financial_stale_count=0,
-                derived_market_cap_count=0,
-                quote_disagreement_count=0,
-            )
-        )
-        pe_df["data_source"] = source_type
-        pe_df["generated_at"] = generated_at
-        pe_df["coverage_ratio"] = pe_df["stock_count"] / total
-        pe_df["constituent_count"] = total
-        pe_df["quote_valid_count"] = pe_df["stock_count"]
-        pe_df["financial_valid_count"] = pe_df["stock_count"]
-        pe_df["profitable_stock_count"] = pe_df["stock_count"]
-        pe_df["valid_stock_count"] = pe_df["stock_count"]
-        pe_df["market_cap_method"] = MARKET_CAP_METHOD
-        pe_df["constituent_basis"] = CONSTITUENT_BASIS
-        pe_df["financial_stale_count"] = 0
-        pe_df["validity_reason"] = pe_df["coverage_ratio"].apply(
-            lambda coverage: None if coverage >= PE_MIN_COVERAGE else "insufficient coverage"
-        )
-        pe_df = normalize_result(pe_df, index_code, constituent_count=total)
-
         self.cache.save_pe_daily(index_code, pe_df)
         self._compute_statistics(index_code, pe_df)
 
@@ -259,6 +201,7 @@ class PEETL:
         stocks: List[Dict],
         quotes_cache: Dict[str, pd.DataFrame],
         progress_cb=None,
+        allow_weekday_fallback: bool = False,
     ) -> pd.DataFrame:
         """向量化 PE 计算，按日期动态计算 TTM（bisect 快速查找）"""
         from bisect import bisect_right
@@ -275,11 +218,24 @@ class PEETL:
             return pd.DataFrame()
 
         combined = pd.concat(all_quotes, ignore_index=True)
-        combined["date"] = pd.to_datetime(combined["date"])
+        combined["date"] = pd.to_datetime(combined["date"], errors="coerce").dt.normalize()
+        combined = combined.dropna(subset=["date"])
         combined = combined.sort_values(["date", "stock_code"])
 
-        close_mat = combined.pivot(index="date", columns="stock_code", values="close")
-        share_mat = combined.pivot(index="date", columns="stock_code", values="outstanding_share")
+        # Quote feeds can contain non-trading dates; only calculate on the
+        # source calendar. Production mode propagates calendar failures.
+        calendar = self.source.get_trading_dates(
+            start_date=combined["date"].min().strftime("%Y-%m-%d"),
+            end_date=combined["date"].max().strftime("%Y-%m-%d"),
+            allow_weekday_fallback=allow_weekday_fallback,
+        ) if hasattr(self.source, "get_trading_dates") else pd.DataFrame({"date": combined["date"].dt.strftime("%Y-%m-%d")})
+        trading_dates = set(pd.to_datetime(calendar["date"]).dt.normalize())
+        combined = combined[combined["date"].dt.normalize().isin(trading_dates)]
+        if combined.empty:
+            return pd.DataFrame()
+
+        close_mat = combined.pivot(index="date", columns="stock_code", values="close").apply(pd.to_numeric, errors="coerce")
+        share_mat = combined.pivot(index="date", columns="stock_code", values="outstanding_share").apply(pd.to_numeric, errors="coerce")
 
         # 预计算每只股票的 TTM 快照 [(publish_date, ttm)]
         # 关键优化：TTM 只在财报发布时变化，预计算后逐日用 bisect 查找
@@ -294,13 +250,13 @@ class PEETL:
             for _, row in qdf.iterrows():
                 pub = row["publish_date"]
                 ttm = self._compute_ttm_from_quarters(qdf, pub)
-                # Keep invalid publication events so a loss-making latest TTM
-                # cannot silently fall back to an older positive profit.
                 events.append((pub, ttm))
             if events:
                 ttm_by_code[code] = events
 
-        valid_codes = [c for c in close_mat.columns if c in ttm_by_code]
+        # Keep quote-valid stocks without a published positive TTM so the output
+        # can explain why a date is invalid instead of dropping it silently.
+        valid_codes = list(close_mat.columns)
         if not valid_codes:
             return pd.DataFrame()
 
@@ -309,17 +265,18 @@ class PEETL:
 
         # 转 numpy 数组加速
         pub_dates_arr = np.array(
-            [[e[0].value for e in ttm_by_code[c]] for c in valid_codes], dtype=object
+            [[e[0].value for e in ttm_by_code.get(c, [])] for c in valid_codes], dtype=object
         )
         ttm_vals_arr = np.array(
-            [[e[1] for e in ttm_by_code[c]] for c in valid_codes], dtype=object
+            [[e[1] for e in ttm_by_code.get(c, [])] for c in valid_codes], dtype=object
         )
 
         dates = close_mat.index.tolist()
         n_dates = len(dates)
         n_stocks = len(valid_codes)
         trade_dates_ns = np.array([pd.Timestamp(d).value for d in dates])
-        min_required = max(10, int(n_stocks * 0.3))
+        constituent_count = len(stocks)
+        min_required = max(1, int(np.ceil(constituent_count * 0.3)))
 
         if progress_cb:
             progress_cb(f"计算 {n_dates} 个交易日 × {n_stocks} 只股票的 PE...")
@@ -331,14 +288,13 @@ class PEETL:
             share_row = share_mat.iloc[i].values
 
             valid_mask = (~np.isnan(close_row)) & (share_row > 0)
-            n_valid = int(valid_mask.sum())
-            if n_valid < min_required:
-                continue
+            valid_stock_count = int(valid_mask.sum())
 
             total_mv = float(np.sum(close_row[valid_mask] * share_row[valid_mask]))
 
             # bisect 查找每只股票的 TTM
             total_ttm = 0.0
+            profitable_stock_count = 0
             for j in range(n_stocks):
                 if not valid_mask[j]:
                     continue
@@ -347,22 +303,31 @@ class PEETL:
                     continue
                 idx = bisect_right(pd_arr, td_ns) - 1
                 if idx >= 0:
-                    ttm_value = ttm_vals_arr[j][idx]
-                    if ttm_value is not None and not pd.isna(ttm_value):
-                        total_ttm += ttm_value
+                    value = ttm_vals_arr[j][idx]
+                    if value is not None and not pd.isna(value):
+                        total_ttm += value
+                        profitable_stock_count += 1
 
+            coverage_ratio = profitable_stock_count / constituent_count if constituent_count else 0.0
+            pe = total_mv / total_ttm if total_ttm > 0 else np.nan
+            reasons = []
+            if profitable_stock_count < min_required:
+                reasons.append("insufficient_coverage")
             if total_ttm <= 0:
-                continue
-
-            pe = total_mv / total_ttm
-            if 0 < pe < PE_MAX_RATIO and n_valid / len(stocks) >= PE_MIN_COVERAGE:
-                results.append({
-                    "trade_date": trade_date.strftime("%Y-%m-%d"),
-                    "total_market_cap": total_mv,
-                    "total_profit_ttm": total_ttm,
-                    "pe_ratio": pe,
-                    "stock_count": n_valid,
-                })
+                reasons.append("non_positive_profit")
+            if not (0 < pe < 100):
+                reasons.append("pe_out_of_bounds")
+            results.append({
+                "trade_date": trade_date.strftime("%Y-%m-%d"),
+                "total_market_cap": total_mv,
+                "total_profit_ttm": total_ttm,
+                "pe_ratio": pe,
+                "stock_count": valid_stock_count,
+                "valid_stock_count": valid_stock_count,
+                "profitable_stock_count": profitable_stock_count,
+                "coverage_ratio": coverage_ratio,
+                "validity_reason": "valid" if not reasons else ";".join(reasons),
+            })
 
             if progress_cb and (i + 1) % 500 == 0:
                 progress_cb(f"  进度: {i+1}/{n_dates} ({(i+1)*100//n_dates}%)")
@@ -373,25 +338,32 @@ class PEETL:
         return pd.DataFrame(results)
 
     def _compute_statistics(self, index_code: str, pe_df: pd.DataFrame):
-        pe_df = compute_statistics(pe_df)
+        from config import ROLLING_WINDOW
+        pe_df = pe_df.copy().sort_values("trade_date").reset_index(drop=True)
 
-        metadata = ["quality_level", "data_source", "generated_at", "coverage_ratio",
-                    "financial_stale_count", "validity_reason", "constituent_count",
-                    "quote_valid_count", "financial_valid_count", "profitable_stock_count",
-                    "valid_stock_count", "market_cap_method", "constituent_basis",
-                    "financial_as_of"]
-        for column in metadata:
-            if column not in pe_df:
-                pe_df[column] = None
+        window = min(ROLLING_WINDOW, len(pe_df))
+        pe_df["pe_mean"] = pe_df["pe_ratio"].rolling(window=window, min_periods=window // 2).mean()
+        pe_df["pe_std"] = pe_df["pe_ratio"].rolling(window=window, min_periods=window // 2).std()
+        pe_df["pe_high_line"] = pe_df["pe_mean"] + pe_df["pe_std"]
+        pe_df["pe_low_line"] = pe_df["pe_mean"] - pe_df["pe_std"]
+
+        sorted_pe = pe_df["pe_ratio"].sort_values().values
+        pe_df["pe_percentile"] = pe_df["pe_ratio"].apply(
+            lambda x: np.searchsorted(sorted_pe, x, side="left") / len(sorted_pe) * 100
+        )
 
         self.cache.save_pe_stats(
             index_code,
-            pe_df[["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line",
-                   "pe_percentile"] + metadata]
+            pe_df[["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]]
         )
 
     def load_result(self, index_code: str) -> Dict:
         pe_df = self.cache.load_index_series(index_code)
+        stats_df = self.cache.load_pe_stats(index_code)
+        if not pe_df.empty and not stats_df.empty:
+            # Merge without duplicating index_code and updated_at
+            stats_cols = [c for c in stats_df.columns if c not in pe_df.columns]
+            pe_df = pe_df.merge(stats_df[["trade_date"] + stats_cols], on="trade_date", how="left")
         return {
             "pe_data": pe_df,
             "last_updated": self.cache.get_last_updated(index_code),
