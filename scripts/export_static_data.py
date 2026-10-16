@@ -28,6 +28,16 @@ OUT = BASE / "static" / "data"
 MAX_DAYS = 2500
 
 
+def _load_index_series(cache, code):
+    """Use the shared cache contract, with a legacy test/source fallback."""
+    loader = getattr(cache, "load_index_series", None)
+    if loader is not None:
+        return loader(code)
+    if code == "H30533":
+        return cache.load_h30533_snapshot(code)["daily"]
+    return cache.load_pe_daily(code)
+
+
 def export_all():
     cache = CacheDB()
     source = get_source()
@@ -58,7 +68,7 @@ def export_all():
             continue
         _save(code, rows)
         entry = {
-            "code": code, "name": name, "type": "index",
+            "code": code, "name": name, "type": "index", "data_file": f"{code}.json",
             "pe_ref": _get_reference_pe(source, name),
         }
         _add_quality_catalog_metadata(entry, pe_df.iloc[-1], generated_at)
@@ -83,7 +93,7 @@ def export_all():
             continue
         _save(code, rows)
         entry = {
-            "code": code, "name": name, "type": "industry",
+            "code": code, "name": name, "type": "industry", "data_file": f"{code}.json",
             "pe_ref": float(r["pe_ttm"]) if pd.notna(r["pe_ttm"]) else None,
         }
         _add_quality_catalog_metadata(entry, pe_df.iloc[-1], generated_at)
@@ -91,6 +101,7 @@ def export_all():
         index_list.append(entry)
 
     # 保存指数列表
+    index_list.sort(key=lambda item: (item.get("type", ""), item.get("name", ""), item.get("code", "")))
     with open(list_path, "w", encoding="utf-8") as f:
         json.dump(index_list, f, ensure_ascii=False, indent=1)
 
@@ -126,7 +137,9 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
         unavailable_reason = _text(latest_row.get("validity_reason")) or unavailable_reason
     rows = _to_rows(pe_df, h30533=True, generated_at=generated_at) if not pe_df.empty else []
     code = "H30533"
-    _save(code, rows)
+    # Do not erase a previously published snapshot when the local cache is unavailable.
+    if rows or not (OUT / f"{code}.json").exists() or generated_at == "now":
+        _save(code, rows)
 
     financial_as_of = _text(latest_row.get("financial_as_of"))
     if financial_as_of is None and not securities.empty and "financial_as_of" in securities:
@@ -151,7 +164,7 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
             "constituent_basis": _text(latest_row.get("constituent_basis")) if not pe_df.empty else None,
             "financial_as_of": financial_as_of,
             "coverage": _number(latest_row.get("weight_coverage")) if not pe_df.empty else None,
-             "quality_level": _text(latest_row.get("quality_level")) or ("C" if unavailable_reason else None),
+            "quality_level": _text(latest_row.get("quality_level")) or ("C" if unavailable_reason else None),
              "data_source": _text(provenance_row.get("data_source")) or _text(provenance_row.get("source_type")),
             "source_url": _text(provenance_row.get("source_url")),
             "fetched_at": _text(provenance_row.get("fetched_at")),
@@ -170,6 +183,7 @@ def _export_china_intl(cache: CacheDB, source, generated_at=None):
                             "quote_disagreement_count", "excluded_count", "invalid_count")
             },
             "validity_reason": unavailable_reason or _text(latest_row.get("validity_reason")),
+            "validity": unavailable_reason or _text(latest_row.get("validity_reason")),
             "stock_diagnostics": _records(securities),
              "unavailable": unavailable_reason is not None,
         }
@@ -300,12 +314,16 @@ def _add_quality_catalog_metadata(entry, latest, generated_at):
         quality = "C"
         reason = reason or "quality metadata unavailable from pipeline/cache"
     entry.update({
+        "data_file": entry.get("data_file", f"{entry.get('code')}.json"),
+        "last_updated": _text(latest.get("trade_date")),
         "quality_level": quality,
         "source": _text(latest.get("data_source")),
         "data_source": _text(latest.get("data_source")),
         "generated_at": _text(latest.get("generated_at")) or generated_at,
         "coverage": _number(latest.get("coverage_ratio")),
         "financial_as_of": _text(latest.get("financial_as_of")),
+        "market_cap_method": _text(latest.get("market_cap_method")),
+        "constituent_basis": _text(latest.get("constituent_basis")),
         "validity": reason,
     })
 

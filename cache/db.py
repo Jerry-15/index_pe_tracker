@@ -73,6 +73,14 @@ class CacheDB:
                     generated_at TEXT,
                     coverage_ratio REAL,
                     financial_stale_count INTEGER,
+                    constituent_count INTEGER,
+                    quote_valid_count INTEGER,
+                    financial_valid_count INTEGER,
+                    profitable_stock_count INTEGER,
+                    valid_stock_count INTEGER,
+                    market_cap_method TEXT,
+                    constituent_basis TEXT,
+                    financial_as_of TEXT,
                     validity_reason TEXT,
                     updated_at REAL,
                     PRIMARY KEY (trade_date, index_code)
@@ -91,6 +99,14 @@ class CacheDB:
                     generated_at TEXT,
                     coverage_ratio REAL,
                     financial_stale_count INTEGER,
+                    constituent_count INTEGER,
+                    quote_valid_count INTEGER,
+                    financial_valid_count INTEGER,
+                    profitable_stock_count INTEGER,
+                    valid_stock_count INTEGER,
+                    market_cap_method TEXT,
+                    constituent_basis TEXT,
+                    financial_as_of TEXT,
                     validity_reason TEXT,
                     updated_at REAL,
                     PRIMARY KEY (trade_date, index_code)
@@ -104,6 +120,43 @@ class CacheDB:
                     record_count INTEGER,
                     error_msg TEXT,
                     created_at REAL
+                );
+
+                CREATE TABLE IF NOT EXISTS trading_calendar (
+                    trade_date TEXT PRIMARY KEY,
+                    is_open INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    updated_at REAL
+                );
+
+                CREATE TABLE IF NOT EXISTS update_checkpoint (
+                    run_id TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    item_key TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    error_msg TEXT,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (run_id, stage, item_key)
+                );
+
+                CREATE TABLE IF NOT EXISTS hk_quotes (
+                    code TEXT NOT NULL, date TEXT NOT NULL, price REAL,
+                    updated_at REAL, PRIMARY KEY (code, date)
+                );
+
+                CREATE TABLE IF NOT EXISTS hk_financials (
+                    code TEXT NOT NULL, report_date TEXT NOT NULL, revenue REAL,
+                    net_profit REAL, eps REAL, publish_date TEXT, updated_at REAL,
+                    PRIMARY KEY (code, report_date)
+                );
+
+                CREATE TABLE IF NOT EXISTS hk_valuation (
+                    code TEXT NOT NULL, snapshot_date TEXT NOT NULL, price REAL,
+                    revenue REAL, net_profit REAL, eps REAL, market_cap REAL,
+                    ps_ratio REAL, pe_ratio REAL, currency TEXT,
+                    profit_status TEXT, valuation_metric TEXT, data_as_of TEXT,
+                    market_cap_method TEXT, updated_at REAL,
+                    PRIMARY KEY (code, snapshot_date)
                 );
 
                 CREATE TABLE IF NOT EXISTS us_pe_daily (
@@ -146,6 +199,13 @@ class CacheDB:
                 );
             """)
             self._migrate_regular_pe_tables(conn)
+            conn.executescript("""
+                CREATE INDEX IF NOT EXISTS idx_quotes_code_date ON stock_quotes(code, date);
+                CREATE INDEX IF NOT EXISTS idx_financials_code_publish ON stock_financials(code, publish_date);
+                CREATE INDEX IF NOT EXISTS idx_quarterly_code_publish ON stock_quarterly_profit(code, publish_date);
+                CREATE INDEX IF NOT EXISTS idx_pe_daily_index_date ON index_pe_daily(index_code, trade_date);
+                CREATE INDEX IF NOT EXISTS idx_pe_stats_index_date ON index_pe_stats(index_code, trade_date);
+            """)
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS h30533_constituent_snapshot (
                     snapshot_date TEXT NOT NULL, index_code TEXT NOT NULL, security_code TEXT NOT NULL,
@@ -199,11 +259,19 @@ class CacheDB:
             "index_pe_daily": {
                 "quality_level": "TEXT", "data_source": "TEXT", "generated_at": "TEXT",
                 "coverage_ratio": "REAL", "financial_stale_count": "INTEGER",
+                "constituent_count": "INTEGER", "quote_valid_count": "INTEGER",
+                "financial_valid_count": "INTEGER", "profitable_stock_count": "INTEGER",
+                "valid_stock_count": "INTEGER", "market_cap_method": "TEXT",
+                "constituent_basis": "TEXT", "financial_as_of": "TEXT",
                 "validity_reason": "TEXT",
             },
             "index_pe_stats": {
                 "quality_level": "TEXT", "data_source": "TEXT", "generated_at": "TEXT",
                 "coverage_ratio": "REAL", "financial_stale_count": "INTEGER",
+                "constituent_count": "INTEGER", "quote_valid_count": "INTEGER",
+                "financial_valid_count": "INTEGER", "profitable_stock_count": "INTEGER",
+                "valid_stock_count": "INTEGER", "market_cap_method": "TEXT",
+                "constituent_basis": "TEXT", "financial_as_of": "TEXT",
                 "validity_reason": "TEXT",
             },
             "us_pe_daily": {
@@ -480,6 +548,76 @@ class CacheDB:
             sql += " ORDER BY date"
             return pd.read_sql_query(sql, conn, params=params)
 
+    def save_trading_calendar(self, df: pd.DataFrame):
+        """保存真实交易日历；空数据不改变已有日历。"""
+        if df.empty:
+            return
+        required = {"trade_date", "is_open"}
+        if not required.issubset(df.columns):
+            raise ValueError("trading calendar requires trade_date and is_open")
+        frame = df.copy()
+        frame["trade_date"] = pd.to_datetime(frame["trade_date"]).dt.strftime("%Y-%m-%d")
+        frame["is_open"] = frame["is_open"].astype(int)
+        if not frame["is_open"].isin([0, 1]).all():
+            raise ValueError("is_open must contain only 0 or 1")
+        source = frame["source"] if "source" in frame else pd.Series("unknown", index=frame.index)
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO trading_calendar VALUES (?, ?, ?, ?)",
+                [(row.trade_date, int(row.is_open), str(src), time.time())
+                 for row, src in zip(frame.itertuples(), source)],
+            )
+
+    def load_trading_calendar(self, start_date: str = "", end_date: str = "") -> pd.DataFrame:
+        with self._conn() as conn:
+            sql = "SELECT trade_date, is_open, source, updated_at FROM trading_calendar"
+            params = []
+            clauses = []
+            if start_date:
+                clauses.append("trade_date >= ?")
+                params.append(start_date)
+            if end_date:
+                clauses.append("trade_date <= ?")
+                params.append(end_date)
+            if clauses:
+                sql += " WHERE " + " AND ".join(clauses)
+            sql += " ORDER BY trade_date"
+            return pd.read_sql_query(sql, conn, params=params)
+
+    def has_trading_calendar(self) -> bool:
+        with self._conn() as conn:
+            return conn.execute("SELECT 1 FROM trading_calendar LIMIT 1").fetchone() is not None
+
+    def save_checkpoint(self, run_id, stage, item_key, status, error_msg=None, updated_at=None):
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO update_checkpoint
+                   (run_id, stage, item_key, status, error_msg, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (run_id, stage, item_key, status, error_msg, updated_at or time.time()),
+            )
+
+    def load_checkpoint(self, run_id, stage=None):
+        with self._conn() as conn:
+            sql = "SELECT * FROM update_checkpoint WHERE run_id=?"
+            params = [run_id]
+            if stage:
+                sql += " AND stage=?"
+                params.append(stage)
+            sql += " ORDER BY stage, item_key"
+            return pd.read_sql_query(sql, conn, params=params)
+
+    def clear_checkpoint(self, run_id):
+        with self._conn() as conn:
+            conn.execute("DELETE FROM update_checkpoint WHERE run_id=?", (run_id,))
+
+    def latest_checkpoint_run(self):
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT run_id FROM update_checkpoint ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+            return row[0] if row else None
+
     def upsert_quotes(self, code: str, df: pd.DataFrame):
         """增量合并日K线（只插入新日期，不删除已有）"""
         if df.empty:
@@ -494,7 +632,13 @@ class CacheDB:
                     row.get("turnover"), time.time()
                 ))
             conn.executemany(
-                "INSERT OR IGNORE INTO stock_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                """INSERT INTO stock_quotes
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(code, date) DO UPDATE SET
+                     open=excluded.open, high=excluded.high, low=excluded.low,
+                     close=excluded.close, volume=excluded.volume, amount=excluded.amount,
+                     outstanding_share=excluded.outstanding_share, turnover=excluded.turnover,
+                     updated_at=excluded.updated_at""",
                 records
             )
 
@@ -504,6 +648,7 @@ class CacheDB:
             return
         with self._conn() as conn:
             conn.execute("DELETE FROM stock_financials WHERE code=?", (code,))
+            conn.execute("DELETE FROM stock_quarterly_profit WHERE code=?", (code,))
             records = []
             for _, row in df.iterrows():
                 records.append((
@@ -645,6 +790,30 @@ class CacheDB:
                 conn, params=[index_code]
             )
 
+    def load_index_series(self, index_code: str) -> pd.DataFrame:
+        """Load any index-like product through one common series API."""
+        if index_code == "H30533":
+            daily = self.load_h30533_snapshot(index_code)["daily"]
+            legacy = self.load_us_pe_daily()
+            if not legacy.empty:
+                stats = self.load_us_pe_stats()
+                if not stats.empty:
+                    legacy = legacy.merge(stats, on="trade_date", how="left")
+            if daily.empty:
+                return legacy
+            if legacy.empty:
+                return daily
+            combined = pd.concat([legacy, daily], ignore_index=True, sort=False)
+            return combined.drop_duplicates("trade_date", keep="last").sort_values("trade_date").reset_index(drop=True)
+        daily = self.load_pe_daily(index_code)
+        if daily.empty:
+            return daily
+        stats = self.load_pe_stats(index_code)
+        if not stats.empty:
+            stat_columns = [column for column in stats.columns if column not in daily.columns]
+            daily = daily.merge(stats[["trade_date"] + stat_columns], on="trade_date", how="left")
+        return daily
+
     def get_last_updated(self, index_code: str) -> Optional[str]:
         """获取指数最近更新日期"""
         with self._conn() as conn:
@@ -662,7 +831,6 @@ class CacheDB:
     def clear_index(self, index_code: str):
         """清除指数的所有缓存数据"""
         with self._conn() as conn:
-            conn.execute("DELETE FROM stock_quotes")  # keep all quotes (shared)
             conn.execute("DELETE FROM index_pe_daily WHERE index_code=?", (index_code,))
             conn.execute("DELETE FROM index_pe_stats WHERE index_code=?", (index_code,))
             conn.execute("DELETE FROM index_constituents WHERE index_code=?", (index_code,))

@@ -11,6 +11,42 @@ from etl.quality import quality_level
 
 
 class RegularValuationMetadataTests(unittest.TestCase):
+    def test_decompose_quarters_never_uses_prior_year_period(self):
+        etl = PEETL.__new__(PEETL)
+        financials = pd.DataFrame([
+            {"report_date": pd.Timestamp("2024-03-31"), "net_profit_attr": 10.0,
+             "publish_date": pd.Timestamp("2024-04-20")},
+            {"report_date": pd.Timestamp("2024-06-30"), "net_profit_attr": 30.0,
+             "publish_date": pd.Timestamp("2024-08-20")},
+            {"report_date": pd.Timestamp("2025-06-30"), "net_profit_attr": 50.0,
+             "publish_date": pd.Timestamp("2025-08-20")},
+        ])
+
+        quarters = etl._decompose_quarterly(financials)
+
+        self.assertEqual(
+            set(quarters["report_date"].dt.strftime("%Y-%m-%d")),
+            {"2024-03-31", "2024-06-30"},
+        )
+        self.assertNotIn("2025-06-30", quarters["report_date"].dt.strftime("%Y-%m-%d").tolist())
+
+    def test_ttm_requires_four_consecutive_published_quarters(self):
+        etl = PEETL.__new__(PEETL)
+        quarters = pd.DataFrame([
+            {"report_date": pd.Timestamp("2025-03-31"), "quarter_profit": 10.0,
+             "publish_date": pd.Timestamp("2025-04-20")},
+            {"report_date": pd.Timestamp("2025-06-30"), "quarter_profit": 20.0,
+             "publish_date": pd.Timestamp("2025-08-20")},
+            {"report_date": pd.Timestamp("2025-12-31"), "quarter_profit": 40.0,
+             "publish_date": pd.Timestamp("2026-04-20")},
+            {"report_date": pd.Timestamp("2026-03-31"), "quarter_profit": 30.0,
+             "publish_date": pd.Timestamp("2026-04-20")},
+        ])
+
+        self.assertIsNone(
+            etl._compute_ttm_from_quarters(quarters, pd.Timestamp("2026-04-21"))
+        )
+
     def test_regular_quality_levels_are_a_or_b_only_when_complete(self):
         for source_type in ("sina", "sw_official"):
             with self.subTest(source_type=source_type):
@@ -37,8 +73,12 @@ class RegularValuationMetadataTests(unittest.TestCase):
                 return pd.DataFrame([
                     {"report_date": pd.Timestamp("2025-12-31"), "quarter_profit": 100.0,
                      "publish_date": pd.Timestamp("2026-01-01")},
-                    {"report_date": pd.Timestamp("2026-03-31"), "quarter_profit": 100.0,
-                     "publish_date": pd.Timestamp("2026-04-01")},
+                    {"report_date": pd.Timestamp("2025-09-30"), "quarter_profit": 100.0,
+                     "publish_date": pd.Timestamp("2025-01-01")},
+                    {"report_date": pd.Timestamp("2025-06-30"), "quarter_profit": 100.0,
+                     "publish_date": pd.Timestamp("2025-01-01")},
+                    {"report_date": pd.Timestamp("2025-03-31"), "quarter_profit": 100.0,
+                     "publish_date": pd.Timestamp("2025-01-01")},
                 ])
 
         etl = PEETL.__new__(PEETL)
@@ -54,7 +94,7 @@ class RegularValuationMetadataTests(unittest.TestCase):
             quotes,
         )
 
-        self.assertEqual(result.iloc[0]["pe_ratio"], 5.0)
+        self.assertEqual(result.iloc[0]["pe_ratio"], 2.5)
 
     def test_pe_values_and_metadata_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -149,6 +189,27 @@ class RegularValuationMetadataTests(unittest.TestCase):
 
             self.assertEqual(cache.load_pe_daily("000300").iloc[0]["pe_ratio"], 13.0)
             self.assertEqual(cache.load_pe_daily("000300").iloc[0]["extra_legacy"], "kept")
+
+    def test_financial_replacement_rebuilds_quarterly_cache(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache = CacheDB(Path(tmpdir) / "refresh.db")
+            old = pd.DataFrame([{
+                "report_date": pd.Timestamp("2025-03-31"),
+                "net_profit_attr": 10.0,
+                "publish_date": pd.Timestamp("2025-04-20"),
+            }])
+            new = old.copy()
+            new.loc[0, "net_profit_attr"] = 20.0
+            quarterly = pd.DataFrame([{
+                "report_date": pd.Timestamp("2025-03-31"),
+                "quarter_profit": 10.0,
+                "publish_date": pd.Timestamp("2025-04-20"),
+            }])
+            cache.save_financials("600000", old)
+            cache.save_quarterly_profits("600000", quarterly)
+            cache.save_financials("600000", new)
+
+            self.assertTrue(cache.load_quarterly_profits("600000").empty)
 
     def test_repeated_stats_save_preserves_legacy_values(self):
         with tempfile.TemporaryDirectory() as tmpdir:

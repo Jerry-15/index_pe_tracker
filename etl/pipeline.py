@@ -6,8 +6,12 @@ import numpy as np
 from typing import List, Dict, Optional
 from data_sources import get_source
 from cache.db import CacheDB
-from config import DEFAULT_LOOKBACK_DAYS, API_BATCH_DELAY
+from config import (
+    DEFAULT_LOOKBACK_DAYS, API_BATCH_DELAY, CONSTITUENT_BASIS,
+    MARKET_CAP_METHOD, PE_MIN_COVERAGE, PE_MAX_RATIO,
+)
 from etl.quality import quality_level
+from etl.valuation import compute_statistics, normalize_result
 
 
 class PEETL:
@@ -18,14 +22,17 @@ class PEETL:
         self.source = get_source()
 
     def _get_trading_dates(self, days: int = DEFAULT_LOOKBACK_DAYS) -> List[str]:
-        today = pd.Timestamp.today()
-        dates = []
-        current = today
-        while len(dates) < days:
-            if current.weekday() < 5:
-                dates.append(current.strftime("%Y-%m-%d"))
-            current -= pd.Timedelta(days=1)
-        return list(reversed(dates))
+        calendar = self.cache.load_trading_calendar()
+        if not calendar.empty:
+            opened = calendar[calendar["is_open"] == 1]["trade_date"].tolist()
+            if len(opened) >= days:
+                return opened[-days:]
+        fetched = self.source.get_trading_calendar()
+        self.cache.save_trading_calendar(fetched)
+        opened = fetched[fetched["is_open"] == 1]["trade_date"].tolist()
+        if len(opened) < days:
+            raise RuntimeError("trading calendar does not cover requested lookback")
+        return opened[-days:]
 
     def _parse_report_period(self, report_date: pd.Timestamp) -> str:
         month, day = report_date.month, report_date.day
@@ -59,18 +66,36 @@ class PEETL:
                 })
             elif period == "H1":
                 # H1 cumulative, find previous Q1 to derive Q2
-                q1_rows = df[(df["period"] == "Q1") & (df["report_date"] < rd)]
-                q1_profit = q1_rows.iloc[-1]["net_profit_attr"] if not q1_rows.empty else 0
+                q1_rows = df[
+                    (df["period"] == "Q1")
+                    & (df["report_date"].dt.year == rd.year)
+                    & (df["report_date"] < rd)
+                ]
+                if q1_rows.empty:
+                    continue
+                q1_profit = q1_rows.iloc[-1]["net_profit_attr"]
                 quarters.append({"report_date": rd, "quarter_profit": profit - q1_profit, "publish_date": pub})
             elif period == "Q3":
                 # Q3 cumulative (9 months), find previous H1 to derive Q3
-                h1_rows = df[(df["period"] == "H1") & (df["report_date"] < rd)]
-                h1_profit = h1_rows.iloc[-1]["net_profit_attr"] if not h1_rows.empty else 0
+                h1_rows = df[
+                    (df["period"] == "H1")
+                    & (df["report_date"].dt.year == rd.year)
+                    & (df["report_date"] < rd)
+                ]
+                if h1_rows.empty:
+                    continue
+                h1_profit = h1_rows.iloc[-1]["net_profit_attr"]
                 quarters.append({"report_date": rd, "quarter_profit": profit - h1_profit, "publish_date": pub})
             elif period == "Annual":
                 # Annual cumulative (12 months), find previous Q3 to derive Q4
-                q3_rows = df[(df["period"] == "Q3") & (df["report_date"] < rd)]
-                q3_profit = q3_rows.iloc[-1]["net_profit_attr"] if not q3_rows.empty else 0
+                q3_rows = df[
+                    (df["period"] == "Q3")
+                    & (df["report_date"].dt.year == rd.year)
+                    & (df["report_date"] < rd)
+                ]
+                if q3_rows.empty:
+                    continue
+                q3_profit = q3_rows.iloc[-1]["net_profit_attr"]
                 quarters.append({"report_date": rd, "quarter_profit": profit - q3_profit, "publish_date": pub})
 
         return pd.DataFrame(quarters)
@@ -86,11 +111,18 @@ class PEETL:
             & ((target_date - quarterly_df["publish_date"]).dt.days <= 400)
         ].sort_values("report_date", ascending=False)
 
-        if len(available) < 2:
+        if len(available) < 4:
             return None
 
         # 取最近4个季度
         recent = available.head(4)
+        period_ordinals = (
+            recent["report_date"].dt.to_period("Q").astype(int).sort_values().to_numpy()
+        )
+        if len(period_ordinals) != 4 or not np.array_equal(
+            period_ordinals, np.arange(period_ordinals[0], period_ordinals[0] + 4)
+        ):
+            return None
         ttm = recent["quarter_profit"].sum()
 
         return ttm if ttm > 0 else None
@@ -201,10 +233,18 @@ class PEETL:
         pe_df["data_source"] = source_type
         pe_df["generated_at"] = generated_at
         pe_df["coverage_ratio"] = pe_df["stock_count"] / total
+        pe_df["constituent_count"] = total
+        pe_df["quote_valid_count"] = pe_df["stock_count"]
+        pe_df["financial_valid_count"] = pe_df["stock_count"]
+        pe_df["profitable_stock_count"] = pe_df["stock_count"]
+        pe_df["valid_stock_count"] = pe_df["stock_count"]
+        pe_df["market_cap_method"] = MARKET_CAP_METHOD
+        pe_df["constituent_basis"] = CONSTITUENT_BASIS
         pe_df["financial_stale_count"] = 0
         pe_df["validity_reason"] = pe_df["coverage_ratio"].apply(
-            lambda coverage: None if coverage >= 0.95 else "partial coverage"
+            lambda coverage: None if coverage >= PE_MIN_COVERAGE else "insufficient coverage"
         )
+        pe_df = normalize_result(pe_df, index_code, constituent_count=total)
 
         self.cache.save_pe_daily(index_code, pe_df)
         self._compute_statistics(index_code, pe_df)
@@ -254,8 +294,9 @@ class PEETL:
             for _, row in qdf.iterrows():
                 pub = row["publish_date"]
                 ttm = self._compute_ttm_from_quarters(qdf, pub)
-                if ttm and ttm > 0:
-                    events.append((pub, ttm))
+                # Keep invalid publication events so a loss-making latest TTM
+                # cannot silently fall back to an older positive profit.
+                events.append((pub, ttm))
             if events:
                 ttm_by_code[code] = events
 
@@ -306,13 +347,15 @@ class PEETL:
                     continue
                 idx = bisect_right(pd_arr, td_ns) - 1
                 if idx >= 0:
-                    total_ttm += ttm_vals_arr[j][idx]
+                    ttm_value = ttm_vals_arr[j][idx]
+                    if ttm_value is not None and not pd.isna(ttm_value):
+                        total_ttm += ttm_value
 
             if total_ttm <= 0:
                 continue
 
             pe = total_mv / total_ttm
-            if 0 < pe < 100:
+            if 0 < pe < PE_MAX_RATIO and n_valid / len(stocks) >= PE_MIN_COVERAGE:
                 results.append({
                     "trade_date": trade_date.strftime("%Y-%m-%d"),
                     "total_market_cap": total_mv,
@@ -330,22 +373,13 @@ class PEETL:
         return pd.DataFrame(results)
 
     def _compute_statistics(self, index_code: str, pe_df: pd.DataFrame):
-        from config import ROLLING_WINDOW
-        pe_df = pe_df.copy().sort_values("trade_date").reset_index(drop=True)
-
-        window = min(ROLLING_WINDOW, len(pe_df))
-        pe_df["pe_mean"] = pe_df["pe_ratio"].rolling(window=window, min_periods=window // 2).mean()
-        pe_df["pe_std"] = pe_df["pe_ratio"].rolling(window=window, min_periods=window // 2).std()
-        pe_df["pe_high_line"] = pe_df["pe_mean"] + pe_df["pe_std"]
-        pe_df["pe_low_line"] = pe_df["pe_mean"] - pe_df["pe_std"]
-
-        sorted_pe = pe_df["pe_ratio"].sort_values().values
-        pe_df["pe_percentile"] = pe_df["pe_ratio"].apply(
-            lambda x: np.searchsorted(sorted_pe, x, side="left") / len(sorted_pe) * 100
-        )
+        pe_df = compute_statistics(pe_df)
 
         metadata = ["quality_level", "data_source", "generated_at", "coverage_ratio",
-                    "financial_stale_count", "validity_reason"]
+                    "financial_stale_count", "validity_reason", "constituent_count",
+                    "quote_valid_count", "financial_valid_count", "profitable_stock_count",
+                    "valid_stock_count", "market_cap_method", "constituent_basis",
+                    "financial_as_of"]
         for column in metadata:
             if column not in pe_df:
                 pe_df[column] = None
@@ -357,12 +391,7 @@ class PEETL:
         )
 
     def load_result(self, index_code: str) -> Dict:
-        pe_df = self.cache.load_pe_daily(index_code)
-        stats_df = self.cache.load_pe_stats(index_code)
-        if not pe_df.empty and not stats_df.empty:
-            # Merge without duplicating index_code and updated_at
-            stats_cols = [c for c in stats_df.columns if c not in pe_df.columns]
-            pe_df = pe_df.merge(stats_df[["trade_date"] + stats_cols], on="trade_date", how="left")
+        pe_df = self.cache.load_index_series(index_code)
         return {
             "pe_data": pe_df,
             "last_updated": self.cache.get_last_updated(index_code),

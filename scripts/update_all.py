@@ -10,6 +10,7 @@ import sys
 import time
 import argparse
 import subprocess
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -20,6 +21,7 @@ from cache.db import CacheDB
 from data_sources import get_source
 from etl.pipeline import PEETL
 from config import INDEX_CONFIG
+from config import UPDATE_FAILURE_THRESHOLD
 
 REFRESH_FIN_DAYS = 30  # 最近财报发布超过N天的股票才重新拉取财报
 
@@ -28,27 +30,41 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def update_quotes(cache, source, codes):
+def update_quotes(cache, source, codes, run_id=None, resume=False):
     """增量更新行情（merge 新日期）"""
     ok, fail = 0, 0
     for i, code in enumerate(codes):
+        checkpoint = cache.load_checkpoint(run_id, "quotes") if run_id and resume else pd.DataFrame()
+        if run_id and resume and not checkpoint.query(
+                "item_key == @code and status == 'success'").empty:
+            continue
+        if run_id:
+            cache.save_checkpoint(run_id, "quotes", code, "running")
         try:
             df = source.get_daily_quotes(code)
-            if not df.empty:
-                cache.upsert_quotes(code, df)
-                ok += 1
+            required = {"date", "close", "outstanding_share"}
+            if df.empty or not required.issubset(df.columns):
+                raise ValueError("empty or invalid quote response")
+            cache.upsert_quotes(code, df)
+            ok += 1
+            if run_id:
+                cache.save_checkpoint(run_id, "quotes", code, "success")
         except Exception:
             fail += 1
+            if run_id:
+                cache.save_checkpoint(run_id, "quotes", code, "failed", str(sys.exc_info()[1]))
         if (i + 1) % 100 == 0:
             log(f"行情更新 [{i+1}/{len(codes)}] 成功{ok} 失败{fail}")
         time.sleep(0.05)
     log(f"行情更新完成: 成功{ok} 失败{fail}")
+    return ok, fail
 
 
-def update_financials(cache, source, codes):
+def update_financials(cache, source, codes, run_id=None, resume=False):
     """增量更新财报 + 重建季度利润"""
     today = pd.Timestamp.today()
     updated = 0
+    failed = 0
     for i, code in enumerate(codes):
         try:
             fin = cache.load_financials(code)
@@ -58,16 +74,22 @@ def update_financials(cache, source, codes):
                 needs = (today - latest_pub).days > REFRESH_FIN_DAYS
             if needs:
                 f = source.get_financial_reports(code)
-                if not f.empty:
-                    cache.save_financials(code, f)
-                    etl._precompute_quarterly_profits([{"code": code}])
-                    updated += 1
-        except Exception:
-            pass
+                if f.empty:
+                    raise ValueError("empty financial response")
+                cache.save_financials(code, f)
+                etl._precompute_quarterly_profits([{"code": code}])
+                updated += 1
+            if run_id:
+                cache.save_checkpoint(run_id, "financials", code, "success")
+        except Exception as exc:
+            failed += 1
+            if run_id:
+                cache.save_checkpoint(run_id, "financials", code, "failed", str(exc))
         if (i + 1) % 200 == 0:
             log(f"财报检查 [{i+1}/{len(codes)}] 更新{updated}")
         time.sleep(0.03)
-    log(f"财报更新完成: 新增/更新 {updated} 只")
+    log(f"财报更新完成: 新增/更新 {updated} 只，失败 {failed} 只")
+    return updated, failed
 
 
 def recompute_all(etl):
@@ -92,6 +114,21 @@ def recompute_all(etl):
     log(f"重算完成: {len(codes)} 个板块")
 
 
+def recompute_selected(etl, selected):
+    """只重算指定指数代码。"""
+    names = {cfg["code"]: name for name, cfg in INDEX_CONFIG.items()}
+    try:
+        ref = etl.source.get_industry_reference()
+        names.update({str(row["code"]): row["name"] for _, row in ref.iterrows()})
+    except Exception:
+        pass
+    for code in sorted(selected):
+        name = names.get(code, code)
+        log(f"重算 {name} ({code}) ...")
+        pe_df = etl.run_index(code, name)
+        log(f"  -> {len(pe_df)}条")
+
+
 def export_static():
     from scripts.export_static_data import export_all
     export_all()
@@ -114,13 +151,23 @@ def git_push():
         log(f"⚠️ 推送失败（可能无新数据或网络问题）: {e}")
 
 
+def validate_static_export():
+    from scripts.validate_export import validate_export
+    validate_export()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--export-only", action="store_true", help="只导出+推送")
     parser.add_argument("--no-push", action="store_true", help="不推送")
+    parser.add_argument("--resume", action="store_true", help="恢复上次运行")
+    parser.add_argument("--only", help="只重算逗号分隔的指数代码")
     args = parser.parse_args()
 
     cache = CacheDB()
+    run_id = cache.latest_checkpoint_run() if args.resume else None
+    if not run_id:
+        run_id = str(uuid.uuid4())
     source = get_source()
     global etl
     etl = PEETL(cache)
@@ -128,6 +175,7 @@ def main():
     if args.export_only:
         log("导出静态数据...")
         export_static()
+        validate_static_export()
         if not args.no_push:
             git_push()
         log("完成")
@@ -139,21 +187,32 @@ def main():
     log(f"待更新股票: {len(codes)} 只")
 
     log("=== 1/4 更新行情 ===")
-    update_quotes(cache, source, codes)
+    _, quote_failures = update_quotes(cache, source, codes, run_id=run_id, resume=args.resume)
+    if codes and quote_failures / len(codes) > UPDATE_FAILURE_THRESHOLD:
+        log("行情失败率超过阈值，停止发布")
+        return 1
 
     log("=== 2/4 更新财报 ===")
-    update_financials(cache, source, codes)
+    _, financial_failures = update_financials(
+        cache, source, codes, run_id=run_id, resume=args.resume
+    )
+    if codes and financial_failures / len(codes) > UPDATE_FAILURE_THRESHOLD:
+        log("财报失败率超过阈值，停止发布")
+        return 1
 
     log("=== 3/4 重算PE ===")
-    recompute_all(etl)
+    selected = set(args.only.split(",")) if args.only else None
+    recompute_all(etl) if selected is None else recompute_selected(etl, selected)
 
     log("=== 4/4 导出静态数据 ===")
     export_static()
+    validate_static_export()
 
     if not args.no_push:
         git_push()
     log("✅ 一键更新完成")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main() or 0)

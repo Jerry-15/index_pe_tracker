@@ -58,8 +58,9 @@ def build_pe_chart(pe_df, index_name, reference_df=None, industry_pe=None):
             fillcolor="rgba(128,128,128,0.15)", showlegend=False, hoverinfo="skip",
         ))
 
+    valid_pe_df = pe_df[pe_df["pe_ratio"].notna()]
     fig.add_trace(go.Scatter(
-        x=pe_df["trade_date"], y=pe_df["pe_ratio"],
+        x=valid_pe_df["trade_date"], y=valid_pe_df["pe_ratio"],
         name="指数PE(TTM)", line=dict(color=CHART_COLORS["pe"], width=2),
         hovertemplate="%(x|%Y-%m-%d)<br>PE: %(y:.2f)<extra></extra>",
     ))
@@ -91,14 +92,15 @@ def build_pe_chart(pe_df, index_name, reference_df=None, industry_pe=None):
                       annotation_text=f"申万官方PE {industry_pe:.1f}", annotation_position="top left")
 
     # 标记当前值
-    latest = pe_df.iloc[-1]
-    fig.add_annotation(
-        x=latest["trade_date"], y=latest["pe_ratio"],
-        text=f"当前 PE: {latest['pe_ratio']:.2f}",
-        showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2,
-        ax=40, ay=-40,
-        bgcolor="rgba(255,255,255,0.8)", bordercolor="#333", borderwidth=1,
-    )
+    if not valid_pe_df.empty:
+        latest = valid_pe_df.iloc[-1]
+        fig.add_annotation(
+            x=latest["trade_date"], y=latest["pe_ratio"],
+            text=f"当前 PE: {latest['pe_ratio']:.2f}",
+            showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2,
+            ax=40, ay=-40,
+            bgcolor="rgba(255,255,255,0.8)", bordercolor="#333", borderwidth=1,
+        )
 
     fig.update_layout(
         title=f"<b>{index_name}</b> — 指数 PE(TTM) 近8年走势",
@@ -254,8 +256,10 @@ def _render_china_intl(us_etl):
     validity_reason = latest.get("validity_reason") if latest is not None else "H30533 snapshot is unavailable"
     if latest is not None and (pd.isna(validity_reason) or not validity_reason):
         validity_reason = None
-    if latest is None or latest.get("pe_ratio") is None or validity_reason:
+    if latest is None or latest.get("pe_ratio") is None:
         st.warning(f"H30533 当前估值不可用：{validity_reason or '缺少有效估值'}")
+    elif validity_reason:
+        st.warning(f"H30533 当前展示历史静态快照：{validity_reason}")
     st.caption(f"财务截至：{financial_as_of or '--'}")
 
     if latest is not None:
@@ -314,6 +318,7 @@ def _render_china_intl(us_etl):
         4. ⚠️ 若快照为空或覆盖不足，页面会明确标记为不可用，不使用其他指数数据替代
         """)
 
+def main():
     etl = get_etl()
     us_etl = USETL()
 
@@ -383,12 +388,13 @@ def _render_china_intl(us_etl):
             st.success("缓存已清除，请重新更新")
             st.rerun()
 
-    # Main content
+    # All index-like products use the same series renderer. H30533 only keeps
+    # a separate constituent-detail source behind the shared result contract.
     if index_type == "中证海外中国互联网50（H30533）":
-        _render_china_intl(us_etl)
-        return
-
-    result = etl.load_result(index_code)
+        result = us_etl.load_result()
+        result["pe_data"] = us_etl.cache.load_index_series("H30533")
+    else:
+        result = etl.load_result(index_code)
     pe_df = result["pe_data"]
 
     # 加载参考PE（宽基：乐咕月度历史；行业：申万官方当前值）
@@ -407,7 +413,7 @@ def _render_china_intl(us_etl):
         latest = pe_df.iloc[-1]
         render_quality_panel(latest)
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("当前 PE(TTM)", f"{latest['pe_ratio']:.2f}")
+        col1.metric("当前 PE(TTM)", f"{latest['pe_ratio']:.2f}" if pd.notna(latest.get("pe_ratio")) else "--")
         if pd.notna(latest.get("pe_mean")):
             col2.metric("滚动均值", f"{latest['pe_mean']:.2f}")
         if pd.notna(latest.get("pe_high_line")):
@@ -416,8 +422,11 @@ def _render_china_intl(us_etl):
             col4.metric("低估线", f"{latest['pe_low_line']:.2f}")
 
         # 数据覆盖率说明
-        total_constituents = len(get_constituents(index_code))
-        coverage = latest.get("stock_count", 0)
+        if index_type == "中证海外中国互联网50（H30533）":
+            total_constituents = int(latest.get("constituent_count") or len(result.get("constituents", [])))
+        else:
+            total_constituents = len(get_constituents(index_code))
+        coverage = latest.get("valid_stock_count", latest.get("stock_count", 0))
         ref_text = ""
         if reference_df is not None and not reference_df.empty:
             ref_text = (f" | 参考PE对比：自下而上 {latest['pe_ratio']:.2f}"
@@ -490,7 +499,12 @@ def _render_china_intl(us_etl):
                     st.plotly_chart(fig_profit, use_container_width=True)
 
         with tab4:
-            constituents = get_constituents(index_code)
+            if index_type == "中证海外中国互联网50（H30533）":
+                constituents = result.get("stock_pe", result.get("constituents"))
+                if constituents is None or constituents.empty:
+                    constituents = result.get("constituents", pd.DataFrame())
+            else:
+                constituents = get_constituents(index_code)
             if not constituents.empty:
                 st.markdown(f"**{index_name} 当前成分股（{len(constituents)} 只）**")
                 st.dataframe(constituents, use_container_width=True, height=400)

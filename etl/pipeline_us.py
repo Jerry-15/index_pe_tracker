@@ -1,14 +1,17 @@
 """中概互联网指数 PE 计算引擎（港股实时EPS + 美股参考PE）"""
 import time
 import requests
+import json
+from pathlib import Path
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional
 from data_sources.us import USDataSource
 from cache.db import CacheDB
-from config import API_BATCH_DELAY, CHINA_INTL_STOCKS, US_REF_PE
+from config import API_BATCH_DELAY, CHINA_INTL_STOCKS, US_REF_PE, H30533_LOOKBACK_DAYS
 from data_sources.h30533 import H30533Source
 from etl.quality import append_reason, is_stale, quality_level
+from etl.valuation import compute_statistics, normalize_result
 
 
 def aggregate_h30533(rows: pd.DataFrame, min_weight_coverage: float = 0.95,
@@ -404,11 +407,27 @@ class USETL:
         """加载结果（含完整历史序列 + 最新快照）"""
         snapshot = self.cache.load_h30533_snapshot(self.index_code)
         pe_df = snapshot["daily"]
+        if pe_df.empty:
+            pe_df = self.cache.load_index_series(self.index_code)
         stock_pe = snapshot["securities"]
         if "code" not in stock_pe and "security_code" in stock_pe:
             stock_pe = stock_pe.copy()
             stock_pe["code"] = stock_pe["security_code"]
         constituents = snapshot["constituents"]
+        if pe_df.empty:
+            legacy = self.cache.load_us_pe_daily()
+            if not legacy.empty:
+                pe_df = legacy
+                stats = self.cache.load_us_pe_stats()
+                if not stats.empty:
+                    pe_df = pe_df.merge(stats, on="trade_date", how="left")
+                pe_df["validity_reason"] = "historical backfill using current constituents"
+                pe_df["quality_level"] = pe_df.get("quality_level", "C")
+                pe_df["source_type"] = "historical_backfill"
+                pe_df["constituent_basis"] = "current_constituents_backfill"
+                pe_df = normalize_result(pe_df, self.index_code)
+        if pe_df.empty:
+            pe_df = self._load_static_fallback()
         return {
             "pe_data": pe_df,
             "stock_pe": stock_pe,
@@ -416,22 +435,38 @@ class USETL:
             "last_updated": self.cache.get_us_last_updated(),
         }
 
+    @staticmethod
+    def _load_static_fallback() -> pd.DataFrame:
+        """Use the published static series when the local live snapshot is unavailable."""
+        path = Path(__file__).resolve().parents[0] / ".." / "static" / "data" / "H30533.json"
+        if not path.exists():
+            return pd.DataFrame()
+        try:
+            rows = json.loads(path.read_text(encoding="utf-8"))
+            if not rows:
+                return pd.DataFrame()
+            columns = [
+                "trade_date", "pe_ratio", "pe_mean", "pe_high_line", "pe_low_line",
+                "pe_percentile", "total_market_cap", "total_profit_ttm",
+            ]
+            frame = pd.DataFrame(rows)
+            frame = frame.iloc[:, :len(columns)]
+            frame.columns = columns
+            frame["validity_reason"] = "static snapshot fallback; live H30533 source unavailable"
+            frame["quality_level"] = "C"
+            frame["source_type"] = "published_static_snapshot"
+            frame["constituent_basis"] = "published_static_snapshot"
+            return normalize_result(frame, "H30533")
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return pd.DataFrame()
+
     def _recompute_us_stats(self):
         """重新计算并保存 US PE 统计指标"""
         snapshot = self.cache.load_h30533_snapshot(self.index_code)
         pe_df = snapshot["daily"]
         if pe_df.empty:
             return
-        pe_df = pe_df.copy().sort_values("trade_date").reset_index(drop=True)
-        window = min(500, len(pe_df))
-        pe_df["pe_mean"] = pe_df["pe_ratio"].rolling(window=window, min_periods=max(60, window // 2)).mean()
-        pe_df["pe_std"] = pe_df["pe_ratio"].rolling(window=window, min_periods=max(60, window // 2)).std()
-        pe_df["pe_high_line"] = pe_df["pe_mean"] + pe_df["pe_std"]
-        pe_df["pe_low_line"] = pe_df["pe_mean"] - pe_df["pe_std"]
-        sorted_pe = pe_df["pe_ratio"].sort_values().values
-        pe_df["pe_percentile"] = pe_df["pe_ratio"].apply(
-            lambda x: np.searchsorted(sorted_pe, x, side="left") / len(sorted_pe) * 100
-        )
+        pe_df = compute_statistics(normalize_result(pe_df, self.index_code))
         self.cache.save_h30533_daily(self.index_code, pe_df)
 
     def run_historical(self, progress_cb=None) -> pd.DataFrame:
@@ -495,7 +530,7 @@ class USETL:
         common_dates = sorted(all_dates)
 
         results = []
-        for date in common_dates[-500:]:
+        for date in self._select_historical_dates(common_dates):
             try:
                 td = pd.Timestamp(date)
             except Exception:
@@ -582,16 +617,13 @@ class USETL:
             pe_df["constituent_as_of"] = source_meta.get("as_of")
             pe_df["constituent_basis"] = "H30533"
             window = min(500, len(pe_df))
-            pe_df["pe_mean"] = pe_df["pe_ratio"].rolling(window=window, min_periods=max(60, window // 2)).mean()
-            pe_df["pe_std"] = pe_df["pe_ratio"].rolling(window=window, min_periods=max(60, window // 2)).std()
-            pe_df["pe_high_line"] = pe_df["pe_mean"] + pe_df["pe_std"]
-            pe_df["pe_low_line"] = pe_df["pe_mean"] - pe_df["pe_std"]
-            sorted_pe = pe_df["pe_ratio"].sort_values().values
-            pe_df["pe_percentile"] = pe_df["pe_ratio"].apply(
-                lambda x: np.searchsorted(sorted_pe, x, side="left") / len(sorted_pe) * 100
-            )
+            pe_df = compute_statistics(normalize_result(pe_df, self.index_code, constituent_count=total))
             self.cache.save_us_pe_daily(pe_df)
             stats_cols = ["trade_date", "pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]
             self.cache.save_us_pe_stats(pe_df[stats_cols])
             return pe_df
         return pd.DataFrame()
+
+    @staticmethod
+    def _select_historical_dates(common_dates):
+        return common_dates[-H30533_LOOKBACK_DAYS:]

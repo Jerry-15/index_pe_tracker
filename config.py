@@ -47,8 +47,15 @@ CHINA_INTL_CONFIG = {
 
 # 默认参数
 DEFAULT_LOOKBACK_DAYS = 2000  # 约8年交易日
+H30533_LOOKBACK_DAYS = 2000   # H30533 历史曲线约8年交易日
 ROLLING_WINDOW = 2000         # 滚动窗口用于均值/标准差计算
 MIN_PUBLISHED_DAYS = 10       # 财报发布后至少N天才能用于TTM计算
+PE_MIN_COVERAGE = 0.30
+PE_MIN_RATIO = 0.0
+PE_MAX_RATIO = 100.0
+UPDATE_FAILURE_THRESHOLD = 0.10
+MARKET_CAP_METHOD = "circulating_market_cap_proxy"
+CONSTITUENT_BASIS = "current_constituents_backfill"
 
 # API 限制
 API_RETRY_TIMES = 3

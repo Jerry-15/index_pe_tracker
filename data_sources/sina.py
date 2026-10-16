@@ -169,3 +169,21 @@ class SinaDataSource(DataSource):
                     time.sleep(API_RETRY_DELAY * (attempt + 1))
                 else:
                     return pd.DataFrame(columns=["date", "pe_ttm"])
+
+    def get_trading_calendar(self, start_date: str = "", end_date: str = "") -> pd.DataFrame:
+        """获取 A 股真实交易日历，不以工作日推算替代。"""
+        try:
+            df = ak.tool_trade_date_hist_sina()
+            if df is None or df.empty:
+                raise RuntimeError("trading calendar source returned no rows")
+            date_col = "trade_date" if "trade_date" in df.columns else df.columns[0]
+            result = pd.DataFrame({"trade_date": pd.to_datetime(df[date_col])})
+            result["is_open"] = 1
+            result["source"] = "sina"
+            if start_date:
+                result = result[result["trade_date"] >= pd.Timestamp(start_date)]
+            if end_date:
+                result = result[result["trade_date"] <= pd.Timestamp(end_date)]
+            return result.assign(trade_date=result["trade_date"].dt.strftime("%Y-%m-%d"))
+        except Exception as exc:
+            raise RuntimeError(f"Failed to get A-share trading calendar: {exc}") from exc
