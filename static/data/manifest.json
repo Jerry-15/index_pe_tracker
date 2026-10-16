@@ -1,7 +1,7 @@
 {
  "schema_version": 2,
- "source_revision": "461f51366c48dbe888592116b4929e5044bbda56",
- "generated_at": "2026-10-16T00:09:02.177203+00:00",
+ "source_revision": "7826bcf038ea42c56c3ade0bcbb25f762e83b17d",
+ "generated_at": "2026-10-16T01:47:15.774966+00:00",
  "item_count": 35,
  "date_ranges": {
   "000300": {
@@ -141,8 +141,8 @@
    "end": "2026-08-31"
   },
   "H30533": {
-   "start": "2024-11-04",
-   "end": "2026-10-16"
+   "start": "2024-11-05",
+   "end": "2026-10-15"
   }
  },
  "artifacts": [
