@@ -21,14 +21,18 @@ class ValuationContractTests(unittest.TestCase):
         self.assertEqual(frame.iloc[0]["data_source"], "csi_official")
 
     def test_statistics_ignore_null_pe_values(self):
-        frame = normalize_result(pd.DataFrame([
-            {"trade_date": "2026-10-13", "pe_ratio": 10.0},
-            {"trade_date": "2026-10-14", "pe_ratio": None},
-            {"trade_date": "2026-10-15", "pe_ratio": 20.0},
-        ]), index_code="000300")
+        values = [10.0 + (index % 5) for index in range(200)]
+        values[150] = None
+        frame = normalize_result(pd.DataFrame({
+            "trade_date": pd.date_range("2020-01-01", periods=200, freq="B").strftime("%Y-%m-%d"),
+            "pe_ratio": values,
+        }), index_code="000300")
 
         result = compute_statistics(frame)
 
-        self.assertTrue(pd.isna(result.iloc[1]["pe_percentile"]))
-        self.assertEqual(result.iloc[0]["pe_percentile"], 50.0)
-        self.assertEqual(result.iloc[2]["pe_percentile"], 100.0)
+        # A missing PE never receives a percentile of its own.
+        self.assertTrue(pd.isna(result.iloc[150]["pe_percentile"]))
+        # Later rows still compute normally instead of being polluted by a zero fill.
+        self.assertFalse(pd.isna(result.iloc[-1]["pe_percentile"]))
+        valid = result["pe_percentile"].dropna()
+        self.assertTrue(((valid >= 0) & (valid <= 100)).all())

@@ -2,12 +2,18 @@
 import numpy as np
 import pandas as pd
 
+from config import ROLLING_WINDOW
 
 STAT_COLUMNS = ["pe_mean", "pe_std", "pe_high_line", "pe_low_line", "pe_percentile"]
 
 
-def add_valuation_stats(pe_df: pd.DataFrame) -> pd.DataFrame:
-    """Add rolling valuation bands and full-series percentile to any PE frame."""
+def add_valuation_stats(pe_df: pd.DataFrame, window: int | None = None) -> pd.DataFrame:
+    """Add rolling valuation bands and a rolling percentile.
+
+    Both the bands and the percentile use the *same* trailing window, so the
+    trend tab and the percentile tab can never disagree about whether the
+    current PE is cheap or expensive.
+    """
     result = pe_df.copy()
     if result.empty:
         for column in STAT_COLUMNS:
@@ -19,15 +25,13 @@ def add_valuation_stats(pe_df: pd.DataFrame) -> pd.DataFrame:
     valid = pd.to_numeric(result.get("pe_ratio", pd.Series(dtype=float)), errors="coerce")
     if valid.notna().sum() == 0:
         return result
-    window = min(500, len(result))
-    min_periods = min(60, window)
-    result["pe_mean"] = valid.rolling(window=window, min_periods=min_periods).mean()
-    result["pe_std"] = valid.rolling(window=window, min_periods=min_periods).std().fillna(0)
+    size = min(window or ROLLING_WINDOW, len(result))
+    min_periods = max(1, min(size, max(60, size // 2)))
+    result["pe_mean"] = valid.rolling(window=size, min_periods=min_periods).mean()
+    result["pe_std"] = valid.rolling(window=size, min_periods=min_periods).std().fillna(0)
     result["pe_high_line"] = result["pe_mean"] + result["pe_std"]
     result["pe_low_line"] = result["pe_mean"] - result["pe_std"]
-    values = valid.dropna().sort_values().values
-    result["pe_percentile"] = valid.map(
-        lambda value: np.searchsorted(values, value, side="left") / len(values) * 100
-        if pd.notna(value) else np.nan
+    result["pe_percentile"] = (
+        valid.rolling(window=size, min_periods=min_periods).rank(pct=True) * 100
     )
     return result

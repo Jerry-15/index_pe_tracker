@@ -266,6 +266,10 @@ def _metadata(row, generated_at):
         "coverage": _number(row.get("coverage", row.get("coverage_ratio", row.get("weight_coverage")))),
         "financial_as_of": _text(row.get("financial_as_of")),
         "validity": _text(row.get("validity", row.get("validity_reason"))) or "unknown",
+        "pe_ratio_all": _number(row.get("pe_ratio_all")),
+        "total_market_cap_all": _number(row.get("total_market_cap_all")),
+        "total_profit_ttm_all": _number(row.get("total_profit_ttm_all")),
+        "loss_making_stock_count": _number(row.get("loss_making_stock_count")),
     }
 
 

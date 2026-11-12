@@ -5,7 +5,8 @@ import numpy as np
 from typing import List, Dict, Optional
 from data_sources import get_source
 from cache.db import CacheDB
-from config import DEFAULT_LOOKBACK_DAYS, API_BATCH_DELAY
+from config import DEFAULT_LOOKBACK_DAYS, API_BATCH_DELAY, COVERAGE_RELATIVE_FLOOR
+from etl.stats import add_valuation_stats
 
 
 class PEETL:
@@ -78,6 +79,13 @@ class PEETL:
 
     def _compute_ttm_from_quarters(self, quarterly_df: pd.DataFrame, target_date: pd.Timestamp) -> Optional[float]:
         """从已拆分的季度利润计算 TTM"""
+        ttm = self._compute_signed_ttm_from_quarters(quarterly_df, target_date)
+        return ttm if ttm is not None and ttm > 0 else None
+
+    def _compute_signed_ttm_from_quarters(
+        self, quarterly_df: pd.DataFrame, target_date: pd.Timestamp
+    ) -> Optional[float]:
+        """Return signed TTM profit; negative TTM remains observable."""
         if quarterly_df.empty:
             return None
 
@@ -92,9 +100,7 @@ class PEETL:
 
         # 取最近4个季度
         recent = available.head(4)
-        ttm = recent["quarter_profit"].sum()
-
-        return ttm if ttm > 0 else None
+        return float(recent["quarter_profit"].sum())
 
     def _precompute_quarterly_profits(self, stocks: List[Dict], progress_cb=None):
         """预处理所有股票的季度利润分解（只执行一次）"""
@@ -188,6 +194,20 @@ class PEETL:
         if pe_df.empty:
             return pe_df
 
+        generated_at = pd.Timestamp.now(tz="UTC").replace(microsecond=0).isoformat()
+        source_type = "sw_official" if str(index_code).startswith("801") else "sina"
+        pe_df["quality_level"] = pe_df["pe_ratio"].apply(
+            lambda value: "A" if pd.notna(value) else "C"
+        )
+        pe_df["data_source"] = source_type
+        pe_df["generated_at"] = generated_at
+        pe_df["constituent_count"] = total
+        pe_df["quote_valid_count"] = pe_df["stock_count"]
+        pe_df["financial_valid_count"] = pe_df["profitable_stock_count"]
+        pe_df["valid_stock_count"] = pe_df["profitable_stock_count"]
+        pe_df["market_cap_method"] = "circulating_market_cap_proxy"
+        pe_df["constituent_basis"] = "current_constituents_backfill"
+
         self.cache.save_pe_daily(index_code, pe_df)
         self._compute_statistics(index_code, pe_df)
 
@@ -249,7 +269,7 @@ class PEETL:
             events = []
             for _, row in qdf.iterrows():
                 pub = row["publish_date"]
-                ttm = self._compute_ttm_from_quarters(qdf, pub)
+                ttm = self._compute_signed_ttm_from_quarters(qdf, pub)
                 events.append((pub, ttm))
             if events:
                 ttm_by_code[code] = events
@@ -290,11 +310,14 @@ class PEETL:
             valid_mask = (~np.isnan(close_row)) & (share_row > 0)
             valid_stock_count = int(valid_mask.sum())
 
-            total_mv = float(np.sum(close_row[valid_mask] * share_row[valid_mask]))
-
             # bisect 查找每只股票的 TTM
             total_ttm = 0.0
+            total_ttm_all = 0.0
+            all_profit_stock_count = 0
+            loss_making_stock_count = 0
             profitable_stock_count = 0
+            profitable_mask = np.zeros(n_stocks, dtype=bool)
+            all_profit_mask = np.zeros(n_stocks, dtype=bool)
             for j in range(n_stocks):
                 if not valid_mask[j]:
                     continue
@@ -305,11 +328,23 @@ class PEETL:
                 if idx >= 0:
                     value = ttm_vals_arr[j][idx]
                     if value is not None and not pd.isna(value):
-                        total_ttm += value
-                        profitable_stock_count += 1
+                        total_ttm_all += value
+                        all_profit_stock_count += 1
+                        all_profit_mask[j] = True
+                        if value > 0:
+                            total_ttm += value
+                            profitable_stock_count += 1
+                            profitable_mask[j] = True
+                        else:
+                            loss_making_stock_count += 1
 
             coverage_ratio = profitable_stock_count / constituent_count if constituent_count else 0.0
+            # Positive-profit PE excludes loss-making constituents from both
+            # numerator and denominator; do not mix their market caps in.
+            total_mv = float(np.sum(close_row[profitable_mask] * share_row[profitable_mask]))
+            total_mv_all = float(np.sum(close_row[all_profit_mask] * share_row[all_profit_mask]))
             pe = total_mv / total_ttm if total_ttm > 0 else np.nan
+            pe_all = total_mv_all / total_ttm_all if total_ttm_all != 0 else np.nan
             reasons = []
             if profitable_stock_count < min_required:
                 reasons.append("insufficient_coverage")
@@ -321,7 +356,13 @@ class PEETL:
                 "trade_date": trade_date.strftime("%Y-%m-%d"),
                 "total_market_cap": total_mv,
                 "total_profit_ttm": total_ttm,
-                "pe_ratio": pe,
+                "total_market_cap_all": total_mv_all,
+                "total_profit_ttm_all": total_ttm_all,
+                "pe_ratio_all": pe_all,
+                "all_profit_stock_count": all_profit_stock_count,
+                "loss_making_stock_count": loss_making_stock_count,
+                # Never publish a PE for a row we already flagged as invalid.
+                "pe_ratio": np.nan if reasons else pe,
                 "stock_count": valid_stock_count,
                 "valid_stock_count": valid_stock_count,
                 "profitable_stock_count": profitable_stock_count,
@@ -335,22 +376,34 @@ class PEETL:
         if progress_cb:
             progress_cb(f"  进度: {n_dates}/{n_dates} (100%)")
 
-        return pd.DataFrame(results)
+        return self._guard_coverage_outliers(pd.DataFrame(results))
+
+    @staticmethod
+    def _guard_coverage_outliers(frame: pd.DataFrame) -> pd.DataFrame:
+        """Void rows whose coverage collapses versus the recent trading norm.
+
+        A half-downloaded latest day otherwise produces a PE computed from a
+        partial basket, which is not a valid index multiple.
+        """
+        if frame.empty:
+            return frame
+        frame = frame.sort_values("trade_date").reset_index(drop=True)
+        coverage = pd.to_numeric(frame["coverage_ratio"], errors="coerce")
+        baseline = coverage.shift(1).rolling(window=20, min_periods=2).median()
+        incomplete = baseline.notna() & (coverage < baseline * COVERAGE_RELATIVE_FLOOR)
+        if incomplete.any():
+            for position in frame.index[incomplete]:
+                existing = frame.at[position, "validity_reason"]
+                suffix = "incomplete_coverage_snapshot"
+                frame.at[position, "validity_reason"] = (
+                    suffix if existing in (None, "", "valid") else f"{existing};{suffix}"
+                )
+                frame.at[position, "pe_ratio"] = np.nan
+        return frame
 
     def _compute_statistics(self, index_code: str, pe_df: pd.DataFrame):
-        from config import ROLLING_WINDOW
-        pe_df = pe_df.copy().sort_values("trade_date").reset_index(drop=True)
-
-        window = min(ROLLING_WINDOW, len(pe_df))
-        pe_df["pe_mean"] = pe_df["pe_ratio"].rolling(window=window, min_periods=window // 2).mean()
-        pe_df["pe_std"] = pe_df["pe_ratio"].rolling(window=window, min_periods=window // 2).std()
-        pe_df["pe_high_line"] = pe_df["pe_mean"] + pe_df["pe_std"]
-        pe_df["pe_low_line"] = pe_df["pe_mean"] - pe_df["pe_std"]
-
-        sorted_pe = pe_df["pe_ratio"].sort_values().values
-        pe_df["pe_percentile"] = pe_df["pe_ratio"].apply(
-            lambda x: np.searchsorted(sorted_pe, x, side="left") / len(sorted_pe) * 100
-        )
+        # Single shared implementation: bands and percentile use one window.
+        pe_df = add_valuation_stats(pe_df)
 
         self.cache.save_pe_stats(
             index_code,

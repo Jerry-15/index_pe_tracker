@@ -241,10 +241,14 @@ def _render_china_intl(us_etl):
 
     if pe_df is not None and not pe_df.empty:
         pe_df = add_valuation_stats(pe_df)
-        latest = pe_df.iloc[-1]
+        latest_row = pe_df.iloc[-1]
+        valid_rows = pe_df[pe_df["pe_ratio"].notna()]
+        latest = valid_rows.iloc[-1] if not valid_rows.empty else latest_row
+        latest_is_stale = latest_row["trade_date"] != latest["trade_date"]
         col1, col2, col3, col4 = st.columns(4)
         pe = latest.get("pe_ratio")
-        col1.metric("当前 PE(TTM)", f"{pe:.2f}" if pd.notna(pe) else "不可用")
+        col1.metric("最近有效 PE(TTM)" if latest_is_stale else "当前 PE(TTM)",
+                    f"{pe:.2f}" if pd.notna(pe) else "不可用")
         if "pe_mean" in pe_df.columns and pd.notna(latest.get("pe_mean")):
             col2.metric("滚动均值", f"{latest['pe_mean']:.2f}")
         if "pe_high_line" in pe_df.columns and pd.notna(latest.get("pe_high_line")):
@@ -257,7 +261,7 @@ def _render_china_intl(us_etl):
         st.caption(
             f"来源：{latest.get('source_type') or '未知'} | 来源日期：{latest.get('source_date') or '--'} | "
             f"成分日期：{latest.get('constituent_as_of') or '--'} | "
-            f"权重覆盖：{latest.get('weight_coverage') if pd.notna(latest.get('weight_coverage')) else '--'} | "
+            f"权重覆盖：{latest_row.get('weight_coverage') if pd.notna(latest_row.get('weight_coverage')) else '--'} | "
             f"财务截至：{stock_pe['financial_as_of'].max() if 'financial_as_of' in stock_pe and stock_pe['financial_as_of'].notna().any() else '--'}"
         )
         generated_at = latest.get("updated_at")
@@ -275,7 +279,12 @@ def _render_china_intl(us_etl):
             "validity": latest.get("validity", latest.get("validity_reason")),
         })
         st.caption(f"成分数：{len(snapshot['constituents'])}")
-        if pd.isna(pe):
+        if latest_is_stale:
+            st.warning(
+                f"最新交易日 {latest_row['trade_date']} 权重覆盖不足，"
+                f"当前展示最近有效交易日 {latest['trade_date']} 的 PE。"
+            )
+        elif pd.isna(pe):
             st.warning(f"当前 PE 不可用：{latest.get('validity_reason') or '有效覆盖不足'}")
         tab1, tab2, tab3 = st.tabs(["PE 走势", "成分股诊断", "说明"])
 
@@ -397,32 +406,53 @@ def main():
 
     # 当前估值卡片
     if pe_df is not None and not pe_df.empty:
-        latest = pe_df.iloc[-1]
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("当前 PE(TTM)", f"{latest['pe_ratio']:.2f}")
+        latest_row = pe_df.iloc[-1]
+        valid_rows = pe_df[pe_df["pe_ratio"].notna()]
+        latest = valid_rows.iloc[-1] if not valid_rows.empty else latest_row
+        latest_is_stale = latest_row["trade_date"] != latest["trade_date"]
+        pe_label = "最近有效 PE(TTM)" if latest_is_stale else "当前 PE(TTM)"
+        pe_value = latest.get("pe_ratio")
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric(pe_label, f"{pe_value:.2f}" if pd.notna(pe_value) else "不可用")
+        pe_all = latest.get("pe_ratio_all")
+        col2.metric("PE(TTM，全利润)", f"{pe_all:.2f}" if pd.notna(pe_all) else "不可用")
         if pd.notna(latest.get("pe_mean")):
-            col2.metric("滚动均值", f"{latest['pe_mean']:.2f}")
+            col3.metric("滚动均值", f"{latest['pe_mean']:.2f}")
         if pd.notna(latest.get("pe_high_line")):
-            col3.metric("高估线", f"{latest['pe_high_line']:.2f}")
+            col4.metric("高估线", f"{latest['pe_high_line']:.2f}")
         if pd.notna(latest.get("pe_low_line")):
-            col4.metric("低估线", f"{latest['pe_low_line']:.2f}")
+            col5.metric("低估线", f"{latest['pe_low_line']:.2f}")
 
         # 数据覆盖率说明
         total_constituents = len(get_constituents(index_code))
         coverage = latest.get("stock_count", 0)
+        valid_profit_count = latest.get("profitable_stock_count")
         ref_text = ""
-        if reference_df is not None and not reference_df.empty:
-            ref_text = (f" | 参考PE对比：自下而上 {latest['pe_ratio']:.2f}"
+        if reference_df is not None and not reference_df.empty and pd.notna(pe_value):
+            ref_text = (f" | 参考PE对比：自下而上 {pe_value:.2f}"
                         f" vs 月度参考 {reference_df['pe_ttm'].iloc[-1]:.2f}")
         elif industry_pe_ref is not None:
             ref_text = f" | 申万官方参考PE: {industry_pe_ref:.2f}"
-        st.caption(f"📊 数据覆盖：{coverage}/{total_constituents} 只成分股 | "
-                   f"更新至 {latest['trade_date']}{ref_text}")
+        coverage_label = f"行情 {coverage}/{total_constituents} 只"
+        if pd.notna(valid_profit_count):
+            coverage_label += f" | 正利润 {int(valid_profit_count)}/{total_constituents} 只"
+        st.caption(f"📊 数据覆盖：{coverage_label} | "
+                   f"最新数据日 {latest_row['trade_date']}"
+                   + (f" | 最近有效 PE 日 {latest['trade_date']}" if latest_is_stale else "")
+                   + ref_text)
+        if latest_is_stale:
+            st.warning(
+                f"最新交易日 {latest_row['trade_date']} 覆盖不足，PE 暂不可用；"
+                f"当前展示最近有效交易日 {latest['trade_date']} 的 PE。"
+            )
+        loss_count = latest.get("loss_making_stock_count")
+        if pd.notna(loss_count):
+            st.caption(f"亏损成分股：{int(loss_count)} 只 | 正利润 PE 为主要估值口径，全利润 PE 保留亏损影响")
         render_quality_panel({
-            "quality_level": latest.get("quality_level"),
-            "source": latest.get("source", latest.get("source_type")),
-            "data_source": latest.get("data_source"),
-            "generated_at": latest.get("generated_at", latest.get("updated_at")),
+            "quality_level": latest.get("quality_level") or "C",
+            "source": latest.get("source", latest.get("source_type")) or "本地估值缓存",
+            "data_source": latest.get("data_source") or "本地估值缓存",
+            "generated_at": latest.get("generated_at", latest.get("updated_at")) or "本地重算",
             "coverage": latest.get("coverage", latest.get("coverage_ratio")),
             "financial_as_of": latest.get("financial_as_of"),
             "validity": latest.get("validity", latest.get("validity_reason")),
@@ -500,17 +530,31 @@ def main():
 
         # 数据表格
         with st.expander("📋 查看原始数据"):
-            cols = ["trade_date", "pe_ratio", "total_market_cap", "total_profit_ttm", "stock_count"]
+            cols = ["trade_date", "pe_ratio", "pe_ratio_all", "total_market_cap",
+                    "total_market_cap_all", "total_profit_ttm", "total_profit_ttm_all",
+                    "loss_making_stock_count", "stock_count"]
+            cols = [column for column in cols if column in pe_df.columns]
             if "pe_percentile" in pe_df.columns:
                 cols.append("pe_percentile")
             show_df = pe_df[cols].copy()
             rename_map = {"trade_date": "日期", "pe_ratio": "PE(TTM)",
+                          "pe_ratio_all": "PE(TTM，全利润)",
                           "total_market_cap": "总市值(元)", "total_profit_ttm": "总利润TTM(元)",
+                          "total_market_cap_all": "全利润口径市值(元)",
+                          "total_profit_ttm_all": "全部净利润TTM(元)",
+                          "loss_making_stock_count": "亏损成分股数",
                           "stock_count": "成分股数", "pe_percentile": "PE百分位"}
             show_df = show_df.rename(columns=rename_map)
             show_df["总市值(亿)"] = (show_df["总市值(元)"] / 1e8).round(2)
             show_df["总利润TTM(亿)"] = (show_df["总利润TTM(元)"] / 1e8).round(2)
+            if "全利润口径市值(元)" in show_df:
+                show_df["全利润口径市值(亿)"] = (show_df["全利润口径市值(元)"] / 1e8).round(2)
+            if "全部净利润TTM(元)" in show_df:
+                show_df["全部净利润TTM(亿)"] = (show_df["全部净利润TTM(元)"] / 1e8).round(2)
             out_cols = ["日期", "PE(TTM)", "总市值(亿)", "总利润TTM(亿)", "成分股数"]
+            for column in ("PE(TTM，全利润)", "全利润口径市值(亿)", "全部净利润TTM(亿)", "亏损成分股数"):
+                if column in show_df:
+                    out_cols.append(column)
             if "PE百分位" in show_df.columns:
                 show_df["PE百分位"] = show_df["PE百分位"].round(1)
                 out_cols.append("PE百分位")

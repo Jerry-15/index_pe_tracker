@@ -41,13 +41,6 @@ def normalize_result(frame: pd.DataFrame, index_code: str, constituent_count=Non
 
 
 def compute_statistics(frame: pd.DataFrame) -> pd.DataFrame:
-    """Compute shared rolling bands and percentile without using invalid PE rows."""
-    result = frame.copy().sort_values("trade_date").reset_index(drop=True)
-    pe = pd.to_numeric(result["pe_ratio"], errors="coerce")
-    window = min(ROLLING_WINDOW, len(result))
-    result["pe_mean"] = pe.rolling(window=window, min_periods=max(1, window // 2)).mean()
-    result["pe_std"] = pe.rolling(window=window, min_periods=max(1, window // 2)).std()
-    result["pe_high_line"] = result["pe_mean"] + result["pe_std"]
-    result["pe_low_line"] = result["pe_mean"] - result["pe_std"]
-    result["pe_percentile"] = pe.rank(pct=True) * 100
-    return result
+    """Delegate to the single shared statistics implementation."""
+    from etl.stats import add_valuation_stats
+    return add_valuation_stats(frame)

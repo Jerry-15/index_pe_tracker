@@ -34,9 +34,8 @@ def update_quotes(cache, source, codes, run_id=None, resume=False):
     """增量更新行情（merge 新日期）"""
     ok, fail = 0, 0
     for i, code in enumerate(codes):
-        checkpoint = cache.load_checkpoint(run_id, "quotes") if run_id and resume else pd.DataFrame()
-        if run_id and resume and not checkpoint.query(
-                "item_key == @code and status == 'success'").empty:
+        checkpoint = cache.load_checkpoint(run_id, "quotes") if run_id and resume else {}
+        if run_id and resume and checkpoint.get(code, {}).get("status") == "success":
             continue
         if run_id:
             cache.save_checkpoint(run_id, "quotes", code, "running")

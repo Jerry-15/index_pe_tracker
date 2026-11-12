@@ -144,6 +144,9 @@ class CacheDB:
                 "financial_valid_count": "INTEGER", "profitable_stock_count": "INTEGER",
                 "valid_stock_count": "INTEGER", "market_cap_method": "TEXT",
                 "constituent_basis": "TEXT", "financial_as_of": "TEXT",
+                "total_market_cap_all": "REAL", "total_profit_ttm_all": "REAL",
+                "pe_ratio_all": "REAL", "all_profit_stock_count": "INTEGER",
+                "loss_making_stock_count": "INTEGER",
                 "validity_reason": "TEXT",
             }.items():
                 for table in ("index_pe_daily", "index_pe_stats"):
@@ -613,19 +616,7 @@ class CacheDB:
         if df.empty:
             return
         with self._conn() as conn:
-            conn.execute("DELETE FROM index_pe_stats WHERE index_code=?", (index_code,))
-            records = []
-            for _, row in df.iterrows():
-                records.append((
-                    row["trade_date"], index_code,
-                    row.get("pe_mean"), row.get("pe_std"),
-                    row.get("pe_high_line"), row.get("pe_low_line"),
-                    row.get("pe_percentile"), time.time()
-                ))
-            conn.executemany(
-                "INSERT OR REPLACE INTO index_pe_stats VALUES (?,?,?,?,?,?,?,?)",
-                records
-            )
+            self._save_regular_pe_table(conn, "index_pe_stats", index_code, df)
 
     def load_pe_stats(self, index_code: str) -> pd.DataFrame:
         """加载统计指标"""
@@ -701,6 +692,13 @@ class CacheDB:
     def clear_checkpoint(self, run_id):
         with self._conn() as conn:
             conn.execute("DELETE FROM update_checkpoint WHERE run_id=?", (run_id,))
+
+    def latest_checkpoint_run(self):
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT run_id FROM update_checkpoint ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+            return row[0] if row else None
 
     def load_index_series(self, index_code):
         if index_code == "H30533":
